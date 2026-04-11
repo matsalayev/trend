@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Claude/Qodo
+.claude/
+.qodo/
+
+# Logs
+*.log
+logs/
+
+# Misc
+*.md
+!README.md
+LICENSE
+Makefile
+
+# MQL4 source (not needed in Docker)
+*.mq4
+*.ex4
+
+# Test files
+test_*.py
+tests/
+
+# Local development
+run.py

@@ -1,0 +1,65 @@
+# Trend Robot - Docker Compose
+# For local development and testing
+
+version: '3.8'
+
+services:
+  trend-robot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trend-robot
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8090}:8090"
+    environment:
+      # Server config
+      - SERVER_PORT=8090
+      - BOT_ID=${BOT_ID:-trend-v1}
+      - BOT_NAME=${BOT_NAME:-Trend Robot}
+      - BOT_VERSION=${BOT_VERSION:-1.0.0}
+      - BOT_SECRET=${BOT_SECRET:-change-me-in-production}
+
+      # Python config
+      - PYTHONUNBUFFERED=1
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - trend-state:/data/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# For development with hot reload
+  trend-robot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trend-robot-dev
+    profiles:
+      - dev
+    ports:
+      - "8091:8090"
+    environment:
+      - SERVER_PORT=8090
+      - BOT_ID=trend-dev
+      - BOT_NAME=Trend Robot (Dev)
+      - BOT_VERSION=1.0.0-dev
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./trend_robot:/app/trend_robot:ro
+      - ./run_server.py:/app/run_server.py:ro
+    command: ["python", "-u", "run_server.py"]
+
+
+volumes:
+  trend-state:
