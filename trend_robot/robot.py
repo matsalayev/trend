@@ -366,9 +366,9 @@ class TrendRobot:
             f"[{self.config.trading.SYMBOL}] "
             f"${self._current_price:.2f} | "
             f"Bal: ${self._balance:.2f} | "
-            f"EMA: {s.get('ema', {})} | "
-            f"ADX: {s.get('adx', 0):.1f} | "
-            f"ATR: {s.get('atr', 0):.2f} | "
+            f"EMA: {s.get('ema', {}).get('fast', 0):.2f}/{s.get('ema', {}).get('slow', 0):.2f} | "
+            f"ADX: {s.get('adx', {}).get('value', 0) if isinstance(s.get('adx'), dict) else s.get('adx', 0):.1f} | "
+            f"ATR: {s.get('atr', 0) if isinstance(s.get('atr'), (int, float)) else 0:.2f} | "
             f"Signal: {s.get('last_signal', 'NONE')} | "
             f"{h}h{m}m"
         )
