@@ -611,7 +611,8 @@ class WebhookClient:
 
         Har bir tick da yuboriladi (yangilangan format - HEMA bilan to'liq integratsiya)
         """
-        # RSI signal
+        # Trend bot: RSI not used, always NEUTRAL (rsi/rsi_prev are always 0.0 from caller)
+        # RSI fields kept in payload — HEMA frontend expects them
         rsi_signal = "NEUTRAL"
         if rsi < settings.get("rsiLevelBuy", 30):
             rsi_signal = "OVERSOLD"
