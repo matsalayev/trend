@@ -43,6 +43,9 @@ class WebhookConfig:
     timeout: int = 10
     max_retries: int = 3
     retry_delay: float = 1.0
+    user_id: str = ''
+    user_bot_id: str = ''
+    taker_fee_rate: float = 0.001
 
 
 class WebhookClient:
