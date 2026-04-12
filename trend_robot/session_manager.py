@@ -534,9 +534,73 @@ class SessionManager:
         }
 
     async def update_settings(self, user_id: str, settings: dict):
-        """Sozlamalarni yangilash"""
+        """Sozlamalarni yangilash (HEMA dan camelCase formatda keladi)"""
         session = self._find_session(user_id)
-        # TODO: live config update (robot config ni o'zgartirish)
+        cs = settings or {}
+
+        # ── Trading ──────────────────────────────────────────────────────
+        if "symbol" in cs:
+            session.trading_pair = str(cs["symbol"])
+        if "leverage" in cs:
+            session.leverage = int(cs["leverage"])
+        if "marginMode" in cs:
+            session.margin_mode = str(cs["marginMode"])
+        if "tradeAmount" in cs:
+            session.trade_amount = float(cs["tradeAmount"])
+
+        # ── EMA ──────────────────────────────────────────────────────────
+        if "emaFastPeriod" in cs:
+            session.ema_fast_period = int(cs["emaFastPeriod"])
+        if "emaSlowPeriod" in cs:
+            session.ema_slow_period = int(cs["emaSlowPeriod"])
+
+        # ── Ichimoku ─────────────────────────────────────────────────────
+        if "ichimokuEnabled" in cs:
+            session.ichimoku_enabled = str(cs["ichimokuEnabled"]).lower() in ("true", "1")
+
+        # ── Trend (ADX) ──────────────────────────────────────────────────
+        if "adxPeriod" in cs:
+            session.adx_period = int(cs["adxPeriod"])
+        if "adxThreshold" in cs:
+            session.adx_threshold = float(cs["adxThreshold"])
+
+        # ── MTF ──────────────────────────────────────────────────────────
+        if "mtfEnabled" in cs:
+            session.mtf_enabled = str(cs["mtfEnabled"]).lower() in ("true", "1")
+
+        # ── Exit / Trailing Stop ─────────────────────────────────────────
+        if "useTrailingStop" in cs:
+            session.use_trailing_stop = str(cs["useTrailingStop"]).lower() in ("true", "1")
+        if "trailingActivatePct" in cs:
+            session.trailing_activate_pct = float(cs["trailingActivatePct"])
+        if "trailingFloorPct" in cs:
+            session.trailing_floor_pct = float(cs["trailingFloorPct"])
+        if "useOppositeSignalExit" in cs:
+            session.use_opposite_signal_exit = str(cs["useOppositeSignalExit"]).lower() in ("true", "1")
+        if "slPercent" in cs:
+            session.sl_percent = float(cs["slPercent"])
+
+        # ── Capital engagement (HEMA sends %, we store decimal) ──────────
+        if "capitalEngagement" in cs:
+            session.capital_engagement = float(cs["capitalEngagement"]) / 100
+
+        # ── Risk ─────────────────────────────────────────────────────────
+        if "maxLossPercent" in cs:
+            session.max_loss_percent = float(cs["maxLossPercent"])
+        if "maxDailyLossPercent" in cs:
+            session.max_daily_loss_percent = float(cs["maxDailyLossPercent"])
+
+        # ── Fee (HEMA sends %, we store decimal) ─────────────────────────
+        if "feeRate" in cs:
+            fee = float(cs["feeRate"]) / 100
+            session.taker_fee_rate = fee
+            session.maker_fee_rate = fee
+
+        # ── Live config update ───────────────────────────────────────────
+        if session.robot and session.status == SessionStatus.RUNNING:
+            session.robot.config = self._create_robot_config(session)
+            logger.info(f"Robot config updated live: {session.session_key}")
+
         logger.info(f"Settings updated: {session.session_key}")
 
     async def close_positions(self, user_id: str):
