@@ -119,6 +119,7 @@ class TrendStrategy:
         self._last_signal: SignalType = SignalType.NONE
         self._last_signal_candle_ts: int = 0
         self._tick_count: int = 0
+        self._last_processed_ts: int = 0
         self._symbol_info = None
 
         logger.info("TrendStrategy yaratildi")
@@ -151,11 +152,15 @@ class TrendStrategy:
         # Indikatorlarni yangilash
         ema_signal = None
         for candle in candles:
+            if candle.timestamp <= self._last_processed_ts:
+                continue
             ema_signal = self.ema_crossover.update(candle.close)
             self.adx.update(candle)
             self.atr.update(candle)
             if self.ichimoku:
                 self.ichimoku.update(candle)
+        if candles:
+            self._last_processed_ts = candles[-1].timestamp
 
         if not self.ema_crossover.initialized:
             return SignalType.NONE

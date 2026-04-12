@@ -128,7 +128,7 @@ class IchimokuConfig:
         2. Price > Cloud (Span A va B)
         3. Chikou > price[26 periods ago]
     """
-    ENABLED: bool = True
+    ENABLED: bool = False
     TENKAN_PERIOD: int = 9
     KIJUN_PERIOD: int = 26
     SENKOU_B_PERIOD: int = 52
@@ -137,7 +137,7 @@ class IchimokuConfig:
     @classmethod
     def from_env(cls) -> "IchimokuConfig":
         return cls(
-            ENABLED=_get_env_bool("USE_ICHIMOKU", True),
+            ENABLED=_get_env_bool("USE_ICHIMOKU", False),
             TENKAN_PERIOD=_get_env_int("TENKAN_PERIOD", 9),
             KIJUN_PERIOD=_get_env_int("KIJUN_PERIOD", 26),
             SENKOU_B_PERIOD=_get_env_int("SENKOU_B_PERIOD", 52),
@@ -160,13 +160,13 @@ class TrendConfig:
         < 20 = flat bozor (signal bloklanadi)
     """
     ADX_PERIOD: int = 14
-    ADX_THRESHOLD: float = 25.0
+    ADX_THRESHOLD: float = 20.0
 
     @classmethod
     def from_env(cls) -> "TrendConfig":
         return cls(
             ADX_PERIOD=_get_env_int("ADX_PERIOD", 14),
-            ADX_THRESHOLD=_get_env_float("ADX_THRESHOLD", 25.0),
+            ADX_THRESHOLD=_get_env_float("ADX_THRESHOLD", 20.0),
         )
 
 
