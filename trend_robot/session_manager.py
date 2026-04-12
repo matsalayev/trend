@@ -300,12 +300,12 @@ class TrendRobotWithWebhook(TrendRobot):
                 logger.warning(f"trade_closed webhook xatosi ({side}): {e}")
 
     async def _send_status_update(self):
-        """Send status update to HEMA"""
+        """Send status update to HEMA via _send_event (bypasses RSI-formatted send_status_update)."""
         if not self.strategy:
             return
 
         try:
-            # Build position lists in webhook format
+            # Positions
             buy_positions = []
             sell_positions = []
 
@@ -327,71 +327,129 @@ class TrendRobotWithWebhook(TrendRobot):
                     "opened_at": p.opened_at,
                 })
 
-            # Strategy stats — trend-specific
-            strategy_status = self.strategy.get_status()
-            stats = {
-                "trades": {
-                    "total": strategy_status.get("total_trades", 0),
-                    "winning": 0,
-                    "win_rate": 0,
-                },
-                "profit": self._equity - self._initial_balance,
-                "unrealized_pnl": self._equity - self._balance,
-                "peak_balance": self._balance,
-                "max_drawdown": 0,
-                "max_drawdown_percent": 0,
+            # All indicator data from strategy
+            status = self.strategy.get_status()
+            ema_raw = status.get("ema", {})
+            ichimoku_raw = status.get("ichimoku")  # None when disabled
+            adx_raw = status.get("adx", {})
+            trailing_long = status.get("trailing_long", {})
+            trailing_short = status.get("trailing_short", {})
+
+            # EMA signal: compare fast vs slow
+            fast_val = ema_raw.get("fast", 0)
+            slow_val = ema_raw.get("slow", 0)
+            if fast_val > 0 and slow_val > 0:
+                spread = fast_val - slow_val
+                ema_signal = "GOLDEN_CROSS" if spread > 0 else "DEATH_CROSS"
+            else:
+                ema_signal = "NEUTRAL"
+
+            ema = {
+                "fast": fast_val,
+                "slow": slow_val,
+                "spread": ema_raw.get("spread", 0),
+                "spreadPct": ema_raw.get("spread_pct", 0),
+                "signal": ema_signal,
             }
 
-            # Settings — trend-specific config (EMA/Ichimoku/ADX)
+            # Ichimoku — None when disabled
+            ichimoku = None
+            if ichimoku_raw:
+                cloud_top = ichimoku_raw.get("cloud_top", 0)
+                cloud_bottom = ichimoku_raw.get("cloud_bottom", 0)
+                price_above = self._current_price > cloud_top if cloud_top > 0 else False
+                if cloud_top > 0:
+                    ichi_signal = "BULLISH" if price_above else "BEARISH"
+                else:
+                    ichi_signal = "NEUTRAL"
+                ichimoku = {
+                    "tenkan": ichimoku_raw.get("tenkan", 0),
+                    "kijun": ichimoku_raw.get("kijun", 0),
+                    "senkouA": ichimoku_raw.get("senkou_a", 0),
+                    "senkouB": ichimoku_raw.get("senkou_b", 0),
+                    "chikou": ichimoku_raw.get("chikou", 0),
+                    "cloudTop": cloud_top,
+                    "cloudBottom": cloud_bottom,
+                    "priceAboveCloud": price_above,
+                    "signal": ichi_signal,
+                }
+
+            # ADX
+            adx = {
+                "value": adx_raw.get("value", 0),
+                "plusDi": adx_raw.get("plus_di", 0),
+                "minusDi": adx_raw.get("minus_di", 0),
+                "trending": adx_raw.get("trending", False),
+                "threshold": self.config.trend.ADX_THRESHOLD,
+            }
+
+            # Trailing stop state
+            trailing = {
+                "longPhase": trailing_long.get("phase", "INACTIVE"),
+                "longStopPrice": trailing_long.get("stop_price", 0),
+                "shortPhase": trailing_short.get("phase", "INACTIVE"),
+                "shortStopPrice": trailing_short.get("stop_price", 0),
+            }
+
+            # Performance
+            performance = {
+                "totalTrades": 0,
+                "winningTrades": 0,
+                "winRate": 0,
+                "profit": round(self._equity - self._initial_balance, 4),
+                "unrealizedPnl": round(self._equity - self._balance, 4),
+                "peakBalance": self._balance,
+                "maxDrawdown": 0,
+                "maxDrawdownPercent": 0,
+            }
+
+            # Settings — trend-specific config
             settings = {
-                "leverage": self.config.trading.LEVERAGE,
                 "emaFastPeriod": self.config.ema.FAST_PERIOD,
                 "emaSlowPeriod": self.config.ema.SLOW_PERIOD,
                 "adxPeriod": self.config.trend.ADX_PERIOD,
                 "adxThreshold": self.config.trend.ADX_THRESHOLD,
+                "trailingActivate": self.config.exit.TRAILING_ACTIVATE_PCT,
+                "trailingSL": self.config.exit.TRAILING_FLOOR_PCT,
                 "ichimokuEnabled": self.config.ichimoku.ENABLED,
-                "mtfEnabled": self.config.mtf.ENABLED,
-                "useTrailingStop": self.config.exit.USE_TRAILING_STOP,
-                "trailingActivatePct": self.config.exit.TRAILING_ACTIVATE_PCT,
-                "trailingFloorPct": self.config.exit.TRAILING_FLOOR_PCT,
-                "slPercent": self.config.exit.SL_PERCENT,
-                "capitalEngagement": self._session.capital_engagement,
-                "feeRate": self._session.taker_fee_rate,
-                # HEMA expects these keys for status_update webhook
-                "rsiLevelBuy": 0,
-                "rsiLevelSell": 0,
-                "takeProfitPercent": 0,
-                "stopLossPercent": self.config.exit.SL_PERCENT,
-                "baseLot": 0,
+                "leverage": self.config.trading.LEVERAGE,
+                "timeframe": self.config.mtf.PRIMARY_TIMEFRAME,
             }
 
-            # Runtime info
+            # Runtime
             uptime = int(time.time() - self._start_time) if self._start_time else 0
-            started_at = datetime.fromtimestamp(self._start_time, tz=timezone.utc).isoformat() if self._start_time else ""
+            started_at = (
+                datetime.fromtimestamp(self._start_time, tz=timezone.utc).isoformat()
+                if self._start_time else ""
+            )
             runtime = {
                 "tick": self._tick_count,
                 "uptime": uptime,
                 "startedAt": started_at,
             }
 
-            # Trend-specific indikatorlar
-            ema_data = strategy_status.get("ema", {})
-            ichimoku_data = strategy_status.get("ichimoku", {})
-            adx_val = strategy_status.get("adx", 0)
-            atr_val = strategy_status.get("atr", 0)
+            # Assemble payload — HEMA destructures: ema, ichimoku, adx, trailing, etc.
+            payload = {
+                "symbol": self.config.trading.SYMBOL,
+                "currentPrice": self._current_price,
+                "balance": self._balance,
+                "positions": {
+                    "buy": buy_positions,
+                    "sell": sell_positions,
+                },
+                "performance": performance,
+                "settings": settings,
+                "runtime": runtime,
+                "ema": ema,
+                "ichimoku": ichimoku,
+                "adx": adx,
+                "trailing": trailing,
+            }
 
-            await self._webhook.send_status_update(
+            await self._webhook._send_event(
+                event_type="status_update",
                 user_bot_id=self._session.user_bot_id,
-                symbol=self.config.trading.SYMBOL,
-                current_price=self._current_price,
-                rsi=adx_val,  # ADX qiymati RSI o'rniga (trend kuchi ko'rsatkichi)
-                rsi_prev=0.0,
-                balance=self._balance,
-                buy_positions=buy_positions,
-                sell_positions=sell_positions,
-                stats=stats,
-                settings=settings,
-                runtime=runtime,
+                data=payload,
             )
 
         except Exception as e:
