@@ -419,7 +419,7 @@ async def register_user(request: Request):
         raise HTTPException(status_code=400, detail="Exchange credentials majburiy")
 
     settings = body.get("settings", {})
-    custom_settings = body.get("customSettings", {})
+    custom_settings = settings.get("customSettings", body.get("customSettings", {}))
 
     # Validate custom settings
     if custom_settings:
@@ -517,6 +517,26 @@ async def get_settings(user_id: str):
 @app.put("/api/v1/users/{user_id}/config", dependencies=[Depends(verify_request)])
 async def update_config(user_id: str, request: Request):
     """Sozlamalarni yangilash (live)"""
+    body = await request.json()
+    custom_settings = body.get("customSettings", body)
+
+    if custom_settings:
+        error = validate_trading_settings(custom_settings)
+        if error:
+            raise HTTPException(status_code=422, detail=error)
+
+    sm = get_session_manager()
+    try:
+        await sm.update_settings(user_id, custom_settings)
+        return {"status": "updated"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.put("/api/v1/users/{user_id}/settings", dependencies=[Depends(verify_request)])
+@app.patch("/api/v1/users/{user_id}/settings", dependencies=[Depends(verify_request)])
+async def update_settings_alias(user_id: str, request: Request):
+    """Settings endpoint alias — HEMA PUT/PATCH orqali yuboradi"""
     body = await request.json()
     custom_settings = body.get("customSettings", body)
 

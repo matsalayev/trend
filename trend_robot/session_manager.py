@@ -15,6 +15,7 @@ TrendRobotWithWebhook — TrendRobot ni kengaytiradi:
 import asyncio
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -135,8 +136,9 @@ class TrendRobotWithWebhook(TrendRobot):
     Server mode da bu klass ishlatiladi (TrendRobot emas).
     Override lar:
         - initialize() — position reconciliation
-        - _tick() — webhook status updates
-        - stop() — close all + webhook events
+        - _open_position() — trade_opened webhook
+        - _tick() — trade_closed detection + status updates
+        - stop() — close all + individual trade_closed + status_changed
     """
 
     def __init__(self, config: RobotConfig, session: UserSession):
@@ -146,6 +148,9 @@ class TrendRobotWithWebhook(TrendRobot):
         self._persistence = session.state_persistence
         self._session_trade_amount = session.trade_amount
         self._status_update_counter = 0
+        # Oldingi tick dagi pozitsiyalar — trade_closed detection uchun
+        self._prev_long: Optional[Any] = None
+        self._prev_short: Optional[Any] = None
 
     async def initialize(self):
         """Initialize + position reconciliation"""
@@ -172,15 +177,127 @@ class TrendRobotWithWebhook(TrendRobot):
             except Exception as e:
                 logger.warning(f"positions_synced yuborishda xato: {e}")
 
+    async def _open_position(self, signal):
+        """Pozitsiya ochish + trade_opened webhook"""
+        symbol = self.config.trading.SYMBOL
+        from .strategy import SignalType
+        side = "buy" if signal == SignalType.LONG else "sell"
+        size = self.strategy.calculate_position_size(self._current_price, self._balance)
+
+        if size <= 0:
+            logger.warning("Pozitsiya hajmi 0 — order qo'yilmaydi")
+            return
+
+        try:
+            logger.info(f"OPENING {signal.value}: {side} {size:.6f} @ ${self._current_price:.2f}")
+            result = await self.client.place_order(symbol, side, "open", size, "market")
+            order_id = ""
+            if isinstance(result, dict):
+                order_id = str(result.get("orderId", result.get("data", {}).get("orderId", "")))
+            if not order_id:
+                order_id = f"trend-{int(time.time() * 1000)}"
+
+            # SL qo'yish
+            pos_side = "long" if signal == SignalType.LONG else "short"
+            sl_price = self.strategy.calculate_sl_price(self._current_price, pos_side)
+
+            if sl_price > 0:
+                await self.client.modify_tpsl(
+                    symbol=symbol,
+                    side=pos_side,
+                    sl_price=sl_price,
+                )
+                logger.info(f"SL qo'yildi: ${sl_price:.2f}")
+
+            # Webhook — trade_opened
+            if self._webhook:
+                try:
+                    await self._webhook.send_trade_opened(
+                        user_bot_id=self._session.user_bot_id,
+                        symbol=symbol,
+                        side=side,
+                        price=self._current_price,
+                        quantity=size,
+                        order_id=order_id,
+                        leverage=self.config.trading.LEVERAGE,
+                        margin_mode=self._session.margin_mode.upper(),
+                    )
+                except Exception as e:
+                    logger.warning(f"trade_opened webhook xatosi: {e}")
+
+            # State persistence
+            if self._persistence:
+                try:
+                    self._persistence.save_position({
+                        "order_id": order_id,
+                        "side": side,
+                        "price": self._current_price,
+                        "size": size,
+                        "opened_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                except Exception as e:
+                    logger.warning(f"State saqlashda xato: {e}")
+
+        except Exception as e:
+            logger.error(f"Order xatosi: {e}")
+
     async def _tick(self):
-        """Tick + webhook status updates (har 5 tick da)"""
+        """Tick + trade_closed detection + webhook status updates"""
+        # Oldingi pozitsiyalarni saqlash (trade_closed detection uchun)
+        prev_long = self._prev_long
+        prev_short = self._prev_short
+
         await super()._tick()
 
-        self._status_update_counter += 1
+        # Hozirgi pozitsiyalar
+        cur_long = self.strategy.long_position if self.strategy else None
+        cur_short = self.strategy.short_position if self.strategy else None
+
+        # Trade closed detection — pozitsiya yo'qolgan bo'lsa
+        if self._webhook:
+            await self._detect_closed_position(prev_long, cur_long, "long")
+            await self._detect_closed_position(prev_short, cur_short, "short")
+
+        # Hozirgi pozitsiyalarni keyingi tick uchun saqlash
+        self._prev_long = cur_long
+        self._prev_short = cur_short
 
         # Status update har 5 tick da
+        self._status_update_counter += 1
         if self._status_update_counter % 5 == 0 and self._webhook:
             await self._send_status_update()
+
+    async def _detect_closed_position(self, prev_pos, cur_pos, side: str):
+        """Pozitsiya yo'qolganini aniqlash va trade_closed yuborish"""
+        if prev_pos is not None and cur_pos is None:
+            # Pozitsiya yopilgan
+            try:
+                if side == "long":
+                    pnl = (self._current_price - prev_pos.entry_price) * prev_pos.size
+                else:
+                    pnl = (prev_pos.entry_price - self._current_price) * prev_pos.size
+
+                await self._webhook.send_trade_closed(
+                    user_bot_id=self._session.user_bot_id,
+                    symbol=self.config.trading.SYMBOL,
+                    side=side,
+                    entry_price=prev_pos.entry_price,
+                    exit_price=self._current_price,
+                    quantity=prev_pos.size,
+                    pnl=pnl,
+                    reason="TRAILING_STOP" if self.config.exit.USE_TRAILING_STOP else "SIGNAL",
+                )
+                logger.info(f"trade_closed webhook: {side} pnl=${pnl:.4f}")
+
+                # State persistence tozalash
+                if self._persistence:
+                    try:
+                        self._persistence.clear_positions()
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logger.warning(f"trade_closed webhook xatosi ({side}): {e}")
 
     async def _send_status_update(self):
         """Send status update to HEMA"""
@@ -210,10 +327,22 @@ class TrendRobotWithWebhook(TrendRobot):
                     "opened_at": p.opened_at,
                 })
 
-            # Strategy stats
-            stats = self.strategy.get_status()
+            # Strategy stats — trend-specific
+            strategy_status = self.strategy.get_status()
+            stats = {
+                "trades": {
+                    "total": strategy_status.get("total_trades", 0),
+                    "winning": 0,
+                    "win_rate": 0,
+                },
+                "profit": self._equity - self._initial_balance,
+                "unrealized_pnl": self._equity - self._balance,
+                "peak_balance": self._balance,
+                "max_drawdown": 0,
+                "max_drawdown_percent": 0,
+            }
 
-            # Settings — trend-specific config
+            # Settings — trend-specific config (EMA/Ichimoku/ADX)
             settings = {
                 "leverage": self.config.trading.LEVERAGE,
                 "emaFastPeriod": self.config.ema.FAST_PERIOD,
@@ -226,14 +355,14 @@ class TrendRobotWithWebhook(TrendRobot):
                 "trailingActivatePct": self.config.exit.TRAILING_ACTIVATE_PCT,
                 "trailingFloorPct": self.config.exit.TRAILING_FLOOR_PCT,
                 "slPercent": self.config.exit.SL_PERCENT,
-                # RSI-related keys expected by webhook_client
-                "rsiLevelBuy": 30,
-                "rsiLevelSell": 70,
-                "takeProfitPercent": 1.0,
+                "capitalEngagement": self._session.capital_engagement,
+                "feeRate": self._session.taker_fee_rate,
+                # HEMA expects these keys for status_update webhook
+                "rsiLevelBuy": 0,
+                "rsiLevelSell": 0,
+                "takeProfitPercent": 0,
                 "stopLossPercent": self.config.exit.SL_PERCENT,
-                "minStepPercent": 0.5,
-                "kLot": 1.0,
-                "baseLot": self.config.trading.BASE_LOT if hasattr(self.config.trading, 'BASE_LOT') else 0.001,
+                "baseLot": 0,
             }
 
             # Runtime info
@@ -245,11 +374,17 @@ class TrendRobotWithWebhook(TrendRobot):
                 "startedAt": started_at,
             }
 
+            # Trend-specific indikatorlar
+            ema_data = strategy_status.get("ema", {})
+            ichimoku_data = strategy_status.get("ichimoku", {})
+            adx_val = strategy_status.get("adx", 0)
+            atr_val = strategy_status.get("atr", 0)
+
             await self._webhook.send_status_update(
                 user_bot_id=self._session.user_bot_id,
                 symbol=self.config.trading.SYMBOL,
                 current_price=self._current_price,
-                rsi=0.0,
+                rsi=adx_val,  # ADX qiymati RSI o'rniga (trend kuchi ko'rsatkichi)
                 rsi_prev=0.0,
                 balance=self._balance,
                 buy_positions=buy_positions,
@@ -261,9 +396,29 @@ class TrendRobotWithWebhook(TrendRobot):
 
         except Exception as e:
             logger.warning(f"Status update xatosi: {e}", exc_info=True)
+
     async def stop(self):
-        """Stop + pozitsiyalarni yopish + webhook"""
+        """Stop + har bir pozitsiya uchun trade_closed webhook + status_changed"""
         logger.info("TrendRobotWithWebhook stopping...")
+
+        # Avval pozitsiyalarni o'qib olish (trade_closed uchun)
+        positions_to_close = []
+        if self.client:
+            try:
+                symbol = self.config.trading.SYMBOL
+                raw = await self.client.get_positions(symbol)
+                for p in raw:
+                    side = p.side if hasattr(p, 'side') else "long"
+                    size = p.size if hasattr(p, 'size') else 0
+                    entry_price = p.entry_price if hasattr(p, 'entry_price') else 0
+                    if size > 0:
+                        positions_to_close.append({
+                            "side": side,
+                            "size": size,
+                            "entry_price": entry_price,
+                        })
+            except Exception as e:
+                logger.warning(f"Stop: pozitsiyalarni o'qishda xato: {e}")
 
         # Pozitsiyalarni yopish
         if self.client:
@@ -273,6 +428,29 @@ class TrendRobotWithWebhook(TrendRobot):
                 logger.info("Barcha pozitsiyalar yopildi")
             except Exception as e:
                 logger.error(f"Pozitsiya yopishda xato: {e}")
+
+        # Har bir pozitsiya uchun trade_closed webhook
+        if self._webhook and positions_to_close:
+            for pos in positions_to_close:
+                try:
+                    if pos["side"] == "long":
+                        pnl = (self._current_price - pos["entry_price"]) * pos["size"]
+                    else:
+                        pnl = (pos["entry_price"] - self._current_price) * pos["size"]
+
+                    await self._webhook.send_trade_closed(
+                        user_bot_id=self._session.user_bot_id,
+                        symbol=self.config.trading.SYMBOL,
+                        side=pos["side"],
+                        entry_price=pos["entry_price"],
+                        exit_price=self._current_price,
+                        quantity=pos["size"],
+                        pnl=pnl,
+                        reason="BOT_STOPPED",
+                    )
+                    logger.info(f"Stop trade_closed: {pos['side']} pnl=${pnl:.4f}")
+                except Exception as e:
+                    logger.warning(f"Stop trade_closed webhook xatosi: {e}")
 
         # Webhook — status_changed
         if self._webhook:
@@ -293,7 +471,6 @@ class TrendRobotWithWebhook(TrendRobot):
                 pass
 
         await super().stop()
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #                           SESSION MANAGER
@@ -376,7 +553,7 @@ class SessionManager:
             api_secret=exchange.get("apiSecret", ""),
             passphrase=exchange.get("passphrase", ""),
             is_demo=is_demo,
-            trading_pair=str(cs.get("symbol", s.get("symbol", "BTCUSDT"))),
+            trading_pair=str(cs.get('tradingPair', s.get('tradingPair', cs.get('symbol', s.get('symbol', 'BTCUSDT'))))),
             leverage=int(cs.get("leverage", s.get("leverage", 10))),
             margin_mode=str(cs.get("marginMode", s.get("marginMode", "crossed"))),
             trade_amount=float(cs.get("tradeAmount", s.get("tradeAmount", 0))),
@@ -408,6 +585,12 @@ class SessionManager:
             webhook_url=webhook_url,
             webhook_secret=webhook_secret,
         )
+
+        # Webhook URL rewrite for Docker internal networking
+        internal_host = os.getenv("INTERNAL_WEBHOOK_HOST", "")
+        if internal_host and webhook_url:
+            webhook_url = re.sub(r'https?://[^/]+', f'http://{internal_host}', webhook_url)
+            logger.info(f"Webhook URL rewritten: {webhook_url}")
 
         # Webhook client
         if webhook_url:
@@ -539,7 +722,9 @@ class SessionManager:
         cs = settings or {}
 
         # ── Trading ──────────────────────────────────────────────────────
-        if "symbol" in cs:
+        if "tradingPair" in cs:
+            session.trading_pair = str(cs["tradingPair"])
+        elif "symbol" in cs:
             session.trading_pair = str(cs["symbol"])
         if "leverage" in cs:
             session.leverage = int(cs["leverage"])
