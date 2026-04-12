@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Any
@@ -178,17 +179,87 @@ class TrendRobotWithWebhook(TrendRobot):
 
         # Status update har 5 tick da
         if self._status_update_counter % 5 == 0 and self._webhook:
-            try:
-                status = self.get_status()
-                await self._webhook.send_event("status_update", {
-                    "status": status,
-                    "price": self._current_price,
-                    "balance": self._balance,
-                    "equity": self._equity,
-                })
-            except Exception as e:
-                logger.debug(f"Status update xatosi: {e}")
+            await self._send_status_update()
 
+    async def _send_status_update(self):
+        """Send status update to HEMA"""
+        if not self.strategy:
+            return
+
+        try:
+            # Build position lists in webhook format
+            buy_positions = []
+            sell_positions = []
+
+            if self.strategy.long_position:
+                p = self.strategy.long_position
+                buy_positions.append({
+                    "price": p.entry_price,
+                    "lot": p.size,
+                    "order_id": p.id,
+                    "opened_at": p.opened_at,
+                })
+
+            if self.strategy.short_position:
+                p = self.strategy.short_position
+                sell_positions.append({
+                    "price": p.entry_price,
+                    "lot": p.size,
+                    "order_id": p.id,
+                    "opened_at": p.opened_at,
+                })
+
+            # Strategy stats
+            stats = self.strategy.get_status()
+
+            # Settings — trend-specific config
+            settings = {
+                "leverage": self.config.trading.LEVERAGE,
+                "emaFastPeriod": self.config.ema.FAST_PERIOD,
+                "emaSlowPeriod": self.config.ema.SLOW_PERIOD,
+                "adxPeriod": self.config.trend.ADX_PERIOD,
+                "adxThreshold": self.config.trend.ADX_THRESHOLD,
+                "ichimokuEnabled": self.config.ichimoku.ENABLED,
+                "mtfEnabled": self.config.mtf.ENABLED,
+                "useTrailingStop": self.config.exit.USE_TRAILING_STOP,
+                "trailingActivatePct": self.config.exit.TRAILING_ACTIVATE_PCT,
+                "trailingFloorPct": self.config.exit.TRAILING_FLOOR_PCT,
+                "slPercent": self.config.exit.SL_PERCENT,
+                # RSI-related keys expected by webhook_client
+                "rsiLevelBuy": 30,
+                "rsiLevelSell": 70,
+                "takeProfitPercent": 1.0,
+                "stopLossPercent": self.config.exit.SL_PERCENT,
+                "minStepPercent": 0.5,
+                "kLot": 1.0,
+                "baseLot": self.config.trading.BASE_LOT if hasattr(self.config.trading, 'BASE_LOT') else 0.001,
+            }
+
+            # Runtime info
+            uptime = int(time.time() - self._start_time) if self._start_time else 0
+            started_at = datetime.fromtimestamp(self._start_time, tz=timezone.utc).isoformat() if self._start_time else ""
+            runtime = {
+                "tick": self._tick_count,
+                "uptime": uptime,
+                "startedAt": started_at,
+            }
+
+            await self._webhook.send_status_update(
+                user_bot_id=self._session.user_bot_id,
+                symbol=self.config.trading.SYMBOL,
+                current_price=self._current_price,
+                rsi=0.0,
+                rsi_prev=0.0,
+                balance=self._balance,
+                buy_positions=buy_positions,
+                sell_positions=sell_positions,
+                stats=stats,
+                settings=settings,
+                runtime=runtime,
+            )
+
+        except Exception as e:
+            logger.debug(f"Status update xatosi: {e}")
     async def stop(self):
         """Stop + pozitsiyalarni yopish + webhook"""
         logger.info("TrendRobotWithWebhook stopping...")
