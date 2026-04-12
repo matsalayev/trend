@@ -260,7 +260,7 @@ class TrendRobotWithWebhook(TrendRobot):
             )
 
         except Exception as e:
-            logger.debug(f"Status update xatosi: {e}")
+            logger.warning(f"Status update xatosi: {e}", exc_info=True)
     async def stop(self):
         """Stop + pozitsiyalarni yopish + webhook"""
         logger.info("TrendRobotWithWebhook stopping...")
