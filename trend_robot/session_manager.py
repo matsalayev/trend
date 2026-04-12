@@ -164,10 +164,11 @@ class TrendRobotWithWebhook(TrendRobot):
         if self._webhook:
             try:
                 positions = await self.client.get_positions(self.config.trading.SYMBOL)
-                await self._webhook.send_event("positions_synced", {
-                    "positions": positions,
-                    "source": "initialize",
-                })
+                await self._webhook.send_positions_synced(
+                    user_bot_id=self._session.user_bot_id,
+                    symbol=self.config.trading.SYMBOL,
+                    positions=positions,
+                )
             except Exception as e:
                 logger.warning(f"positions_synced yuborishda xato: {e}")
 
@@ -276,10 +277,11 @@ class TrendRobotWithWebhook(TrendRobot):
         # Webhook — status_changed
         if self._webhook:
             try:
-                await self._webhook.send_event("status_changed", {
-                    "status": "stopped",
-                    "reason": "user_requested",
-                })
+                await self._webhook.send_status_changed(
+                    user_bot_id=self._session.user_bot_id,
+                    status="stopped",
+                    message="user_requested",
+                )
             except Exception:
                 pass
 
