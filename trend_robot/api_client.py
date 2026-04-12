@@ -235,7 +235,7 @@ class BitgetClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         """HTTP session olish"""
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self.config.TIMEOUT)
+            timeout = aiohttp.ClientTimeout(total=self.config.REQUEST_TIMEOUT)
             self._session = aiohttp.ClientSession(timeout=timeout)
         return self._session
 
@@ -342,7 +342,7 @@ class BitgetClient:
         headers = self._get_headers(method, request_path, body_str)
 
         # Request
-        for attempt in range(self.config.MAX_RETRIES):
+        for attempt in range(3):
             try:
                 async with session.request(
                     method=method,
@@ -368,7 +368,7 @@ class BitgetClient:
                             wait_time = 2 ** attempt  # Exponential backoff
                             logger.warning(f"Cloudflare {response.status} xatosi (attempt {attempt + 1}), {wait_time}s kutilmoqda...")
                             self._circuit_breaker.record_failure()
-                            if attempt < self.config.MAX_RETRIES - 1:
+                            if attempt < 3 - 1:
                                 await asyncio.sleep(wait_time)
                                 continue
                             else:
@@ -383,7 +383,7 @@ class BitgetClient:
                             wait_time = 2 ** attempt
                             logger.warning(f"HTML javob olindi (Cloudflare?), attempt {attempt + 1}, {wait_time}s kutilmoqda...")
                             self._circuit_breaker.record_failure()
-                            if attempt < self.config.MAX_RETRIES - 1:
+                            if attempt < 3 - 1:
                                 await asyncio.sleep(wait_time)
                                 continue
                         raise BitgetAPIError("PARSE_ERROR", f"JSON parse error: {text[:500]}")
@@ -408,7 +408,7 @@ class BitgetClient:
             except aiohttp.ClientError as e:
                 logger.error(f"Request error (attempt {attempt + 1}): {e}")
                 self._circuit_breaker.record_failure()
-                if attempt < self.config.MAX_RETRIES - 1:
+                if attempt < 3 - 1:
                     await asyncio.sleep(2 ** attempt)
                 else:
                     raise BitgetAPIError("NETWORK_ERROR", str(e))

@@ -1,18 +1,17 @@
 """
 Trend Robot - Main Robot
 
-Bollinger Bands + RSI + Volatility Filter breakout bot.
+EMA Crossover + Ichimoku Cloud confirmation + ADX trend strength filter.
 Tick loop va lifecycle boshqaruvi.
 
 Tick tartibi:
     1. Narx va candle olish
     2. Balans yangilash (har 5 tick)
     3. Pozitsiyalar sync (har 10 tick)
-    4. Signal tekshirish (3-condition: BB + RSI + Volatility)
-    5. Pozitsiya ochish (agar signal va pozitsiya yo'q)
-    6. TP/SL re-check (exchange da borligini tekshirish)
-    7. Partial TP tekshirish (cascade exit)
-    8. Risk check (max loss / daily loss)
+    4. Trailing stop va opposite signal exit tekshirish
+    5. Signal tekshirish (EMA + Ichimoku + ADX)
+    6. Pozitsiya ochish (agar signal va pozitsiya yo'q)
+    7. Risk check (max loss / daily loss)
 """
 
 import asyncio
@@ -23,7 +22,7 @@ from typing import Optional, List
 
 from .config import RobotConfig
 from .api_client import BitgetClient, BitgetAPIError
-from .strategy import TrendStrategy, Position, SignalType, TPSLPrices
+from .strategy import TrendStrategy, Position, SignalType
 from .indicators import Candle
 
 logger = logging.getLogger(__name__)
@@ -118,7 +117,6 @@ class TrendRobot:
 
         try:
             self.client = BitgetClient(self.config.api)
-            await self.client.connect()
 
             self._balance = await self.client.get_balance()
             self._equity = await self.client.get_equity()
@@ -142,15 +140,11 @@ class TrendRobot:
                 if "already" not in str(e).lower() and "40756" not in str(e) and "400172" not in str(e):
                     raise
 
-            # Leverage
+            # Leverage — set_leverage has no hold_side param
             try:
                 await self.client.set_leverage(symbol, self.config.trading.LEVERAGE)
             except BitgetAPIError:
-                try:
-                    await self.client.set_leverage(symbol, self.config.trading.LEVERAGE, hold_side="long")
-                    await self.client.set_leverage(symbol, self.config.trading.LEVERAGE, hold_side="short")
-                except Exception:
-                    pass
+                pass
 
             self._symbol_info = await self.client.get_symbol_info(symbol)
             self.strategy = TrendStrategy(self.config)
@@ -216,7 +210,7 @@ class TrendRobot:
             return
 
         # 2. Candles
-        tf = self.config.entry.TIMEFRAME
+        tf = self.config.mtf.PRIMARY_TIMEFRAME
         candles = await self.candle_cache.get_candles(self.client, symbol, tf, 200)
 
         # 3. Balans (har 5 tick)
@@ -234,17 +228,17 @@ class TrendRobot:
             try:
                 raw = await self.client.get_positions(symbol)
                 for p in raw:
-                    side = "long" if p.get("holdSide") == "long" else "short"
-                    size = float(p.get("total", 0))
+                    side = p.side if hasattr(p, 'side') else "long"
+                    size = p.size if hasattr(p, 'size') else 0
                     if size > 0:
                         pos = Position(
-                            id=p.get("posId", ""),
+                            id=p.symbol if hasattr(p, 'symbol') else "",
                             side=side,
-                            entry_price=float(p.get("openPriceAvg", 0)),
+                            entry_price=p.entry_price if hasattr(p, 'entry_price') else 0,
                             size=size,
-                            unrealized_pnl=float(p.get("unrealizedPL", 0)),
-                            margin=float(p.get("margin", 0)),
-                            leverage=int(p.get("leverage", 0)),
+                            unrealized_pnl=p.unrealized_pnl if hasattr(p, 'unrealized_pnl') else 0,
+                            margin=0.0,
+                            leverage=p.leverage if hasattr(p, 'leverage') else 0,
                         )
                         if side == "long":
                             long_pos = pos
@@ -257,29 +251,74 @@ class TrendRobot:
         self.strategy.short_position = short_pos
         in_position = long_pos is not None or short_pos is not None
 
-        # 5. Risk check
-        if self.strategy.check_max_loss(self._balance, self._initial_balance):
+        # 5. Risk check — use RiskConfig directly
+        if self._balance < self._initial_balance * (1 - self.config.risk.MAX_LOSS_PERCENT / 100):
             logger.critical(f"MAX LOSS HIT! Balance: ${self._balance:.2f}")
             await self._force_close_all()
             self._running = False
             return
 
-        if self.strategy.check_daily_loss(self._balance, self._daily_start_balance):
+        if self._balance < self._daily_start_balance * (1 - self.config.risk.MAX_DAILY_LOSS_PERCENT / 100):
             logger.warning(f"DAILY LOSS HIT! Balance: ${self._balance:.2f}")
             self._running = False
             return
 
-        # 6. Signal tekshirish (faqat pozitsiya yo'q bo'lganda)
+        # 6. Trailing stop va exit tekshirish (agar pozitsiya bor)
+        if in_position:
+            await self._check_exits(long_pos, short_pos)
+
+        # 7. Signal tekshirish (faqat pozitsiya yo'q bo'lganda)
         if not in_position and candles:
-            signal = self.strategy.check_signal(candles)
+            signal = self.strategy.check_signal(candles, self._current_price)
 
             if signal != SignalType.NONE:
                 async with self._order_lock:
                     await self._open_position(signal)
 
-        # 7. Status log (har 30 tick)
+        # 8. Status log (har 30 tick)
         if self._tick_count % 30 == 0:
             self._log_status()
+
+    async def _check_exits(self, long_pos: Optional[Position], short_pos: Optional[Position]):
+        """Trailing stop va opposite signal exit tekshirish"""
+        symbol = self.config.trading.SYMBOL
+
+        for pos in (long_pos, short_pos):
+            if pos is None:
+                continue
+
+            # Opposite signal exit
+            if self.strategy.check_opposite_signal_exit(pos):
+                logger.info(f"Opposite signal exit: {pos.side}")
+                close_side = "sell" if pos.side == "long" else "buy"
+                try:
+                    await self.client.place_order(symbol, close_side, "close", pos.size, "market")
+                    self.strategy.reset_trailing(pos.side)
+                except Exception as e:
+                    logger.error(f"Opposite signal exit xatosi: {e}")
+                continue
+
+            # Trailing stop update
+            new_stop = self.strategy.update_trailing_stop(pos, self._current_price)
+            if new_stop is not None:
+                try:
+                    await self.client.modify_tpsl(
+                        symbol=symbol,
+                        side=pos.side,
+                        sl_price=new_stop,
+                    )
+                except Exception as e:
+                    logger.debug(f"Trailing stop update xatosi: {e}")
+
+            # Trailing stop hit check
+            if self.strategy.check_trailing_stop_hit(pos, self._current_price):
+                logger.info(f"Trailing stop hit: {pos.side} @ ${self._current_price:.2f}")
+                close_side = "sell" if pos.side == "long" else "buy"
+                try:
+                    await self.client.place_order(symbol, close_side, "close", pos.size, "market")
+                    self.strategy.reset_trailing(pos.side)
+                except Exception as e:
+                    logger.error(f"Trailing stop close xatosi: {e}")
 
     async def _open_position(self, signal: SignalType):
         """Pozitsiya ochish"""
@@ -289,39 +328,26 @@ class TrendRobot:
 
         if size <= 0:
             logger.warning("Pozitsiya hajmi 0 — order qo'yilmaydi")
-            self.strategy.signal_tracker.record_ignored(signal.value, "size=0")
             return
 
         try:
             logger.info(f"OPENING {signal.value}: {side} {size:.6f} @ ${self._current_price:.2f}")
-            await self.client.place_order(symbol, side, size, "market")
+            await self.client.place_order(symbol, side, "open", size, "market")
 
-            # TP/SL qo'yish
+            # SL qo'yish
             pos_side = "long" if signal == SignalType.LONG else "short"
-            tp_sl = self.strategy.calculate_tp_sl(self._current_price, pos_side)
+            sl_price = self.strategy.calculate_sl_price(self._current_price, pos_side)
 
-            await self._place_tp_sl(symbol, pos_side, tp_sl)
-            self.strategy.reset_for_new_position()
-            self.strategy.signal_tracker.record_taken(signal.value)
+            if sl_price > 0:
+                await self.client.modify_tpsl(
+                    symbol=symbol,
+                    side=pos_side,
+                    sl_price=sl_price,
+                )
+                logger.info(f"SL qo'yildi: ${sl_price:.2f}")
 
         except Exception as e:
             logger.error(f"Order xatosi: {e}")
-
-    async def _place_tp_sl(self, symbol: str, side: str, tp_sl: TPSLPrices):
-        """TP/SL orderlarni exchange da qo'yish"""
-        try:
-            # TP
-            await self.client.modify_tpsl(
-                symbol=symbol,
-                tp_price=tp_sl.tp_price,
-                sl_price=tp_sl.sl_price,
-                hold_side=side,
-            )
-            logger.info(
-                f"TP/SL qo'yildi: TP=${tp_sl.tp_price:.2f}, SL=${tp_sl.sl_price:.2f}"
-            )
-        except Exception as e:
-            logger.error(f"TP/SL qo'yishda xato: {e}")
 
     async def _force_close_all(self):
         """Barcha pozitsiyalarni yopish"""
@@ -340,10 +366,10 @@ class TrendRobot:
             f"[{self.config.trading.SYMBOL}] "
             f"${self._current_price:.2f} | "
             f"Bal: ${self._balance:.2f} | "
-            f"BB: [{s.get('bb', {}).get('lower', 0):.0f}-{s.get('bb', {}).get('upper', 0):.0f}] | "
-            f"RSI: {s.get('rsi', {}).get('value', 0):.1f} | "
-            f"Vol: {'YES' if s.get('volatility', {}).get('is_volatile', False) else 'no'} | "
-            f"Signals: {s.get('signals', {}).get('detected', 0)}d/{s.get('signals', {}).get('taken', 0)}t | "
+            f"EMA: {s.get('ema', {})} | "
+            f"ADX: {s.get('adx', 0):.1f} | "
+            f"ATR: {s.get('atr', 0):.2f} | "
+            f"Signal: {s.get('last_signal', 'NONE')} | "
             f"{h}h{m}m"
         )
 

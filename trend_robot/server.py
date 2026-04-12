@@ -2,7 +2,7 @@
 Trend Robot - REST API Server
 
 HEMA platformasi bilan integratsiya uchun FastAPI server.
-RSI/Hedge/Sure-Fire bot pattern ga mos — bir xil endpoint struktura.
+Trend-following bot pattern — EMA crossover + Ichimoku + ADX.
 """
 
 import asyncio
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 BOT_ID = os.getenv("BOT_ID", "trend-v1")
-BOT_NAME = os.getenv("BOT_NAME", "Trend Robot")
+BOT_NAME = os.getenv("BOT_NAME", "Trend Following Robot")
 BOT_VERSION = os.getenv("BOT_VERSION", "1.0.0")
 BOT_SECRET = os.getenv("BOT_SECRET", "")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
@@ -173,125 +173,84 @@ ERROR_CODE_MAP = {
 
 CONFIG_SCHEMA = {
     "settings": [
-        # Grid sozlamalari
+        # EMA sozlamalari
         {
-            "key": "nPositions", "label": "Grid Positions", "type": "number",
-            "default": 5, "min": 1, "max": 50, "step": 1,
-            "description": "Maksimal ochiq pozitsiyalar soni (har tomon uchun)",
-            "group": "Grid"
+            "key": "emaFastPeriod", "label": "EMA Fast Period", "type": "number",
+            "default": 9, "min": 2, "max": 200, "step": 1,
+            "description": "Tez EMA davri (Golden/Death Cross uchun)",
+            "group": "EMA"
         },
         {
-            "key": "gridSpacingPct", "label": "Grid Spacing %", "type": "number",
-            "default": 0.5, "min": 0.01, "max": 10.0, "step": 0.01,
-            "description": "Grid orasidagi masofa (narxning %)",
-            "group": "Grid"
+            "key": "emaSlowPeriod", "label": "EMA Slow Period", "type": "number",
+            "default": 21, "min": 5, "max": 500, "step": 1,
+            "description": "Sekin EMA davri (Golden/Death Cross uchun)",
+            "group": "EMA"
+        },
+        # Ichimoku sozlamalari
+        {
+            "key": "ichimokuEnabled", "label": "Ichimoku Confirmation", "type": "boolean",
+            "default": True,
+            "description": "Ichimoku Cloud tasdiqlash (Tenkan/Kijun crossover + cloud position)",
+            "group": "Ichimoku"
+        },
+        # ADX sozlamalari
+        {
+            "key": "adxPeriod", "label": "ADX Period", "type": "number",
+            "default": 14, "min": 5, "max": 50, "step": 1,
+            "description": "ADX indikator davri (trend kuchini o'lchash)",
+            "group": "Trend"
         },
         {
-            "key": "gridSpacingVolatilityWeight", "label": "Volatility Weight", "type": "number",
-            "default": 0.5, "min": 0.0, "max": 2.0, "step": 0.1,
-            "description": "ATR volatilite ta'siri grid spacingga (0=off)",
-            "group": "Grid"
+            "key": "adxThreshold", "label": "ADX Threshold", "type": "number",
+            "default": 25, "min": 10, "max": 50, "step": 1,
+            "description": "Minimal ADX qiymati (25+ = kuchli trend)",
+            "group": "Trend"
         },
-        # Entry sozlamalari
+        # MTF sozlamalari
         {
-            "key": "emaSpan0", "label": "EMA Span Short", "type": "number",
-            "default": 100, "min": 1, "max": 10000, "step": 1,
-            "description": "Qisqa EMA davri (shamchalar soni)",
-            "group": "Entry"
-        },
-        {
-            "key": "emaSpan1", "label": "EMA Span Long", "type": "number",
-            "default": 1000, "min": 1, "max": 10000, "step": 1,
-            "description": "Uzun EMA davri (shamchalar soni)",
-            "group": "Entry"
-        },
-        {
-            "key": "initialEmaDist", "label": "Initial EMA Distance %", "type": "number",
-            "default": 0.3, "min": 0.01, "max": 10.0, "step": 0.01,
-            "description": "Birinchi entry uchun EMA dan masofa (%)",
-            "group": "Entry"
-        },
-        {
-            "key": "initialQtyPct", "label": "Initial Qty %", "type": "number",
-            "default": 1, "min": 0.1, "max": 100, "step": 0.1,
-            "description": "Birinchi order hajmi (WEL ning %)",
-            "group": "Entry"
-        },
-        {
-            "key": "doubleDownFactor", "label": "Double Down Factor", "type": "number",
-            "default": 0.7, "min": 0.1, "max": 2.0, "step": 0.1,
-            "description": "Keyingi entry multiplikatoru (0.7 = 70% ko'proq)",
-            "group": "Entry"
+            "key": "mtfEnabled", "label": "Multi-Timeframe", "type": "boolean",
+            "default": True,
+            "description": "Multi-timeframe tasdiqlash (5m signal, 15m confirm, 1H trend)",
+            "group": "Trend"
         },
         # Exit sozlamalari
         {
-            "key": "closeGridMarkupStart", "label": "Close Markup Start %", "type": "number",
-            "default": 0.6, "min": 0.01, "max": 10.0, "step": 0.01,
-            "description": "Birinchi close uchun profit markup (%)",
+            "key": "useTrailingStop", "label": "Trailing Stop", "type": "boolean",
+            "default": True,
+            "description": "3-fazali trailing stop (breakeven → trail)",
             "group": "Exit"
         },
         {
-            "key": "closeGridMarkupEnd", "label": "Close Markup End %", "type": "number",
-            "default": 0.9, "min": 0.01, "max": 20.0, "step": 0.01,
-            "description": "Oxirgi close uchun profit markup (%)",
-            "group": "Exit"
-        },
-        {
-            "key": "closeGridQtyPct", "label": "Close Qty %", "type": "number",
-            "default": 50, "min": 10, "max": 100, "step": 5,
-            "description": "Har close da pozitsiyaning necha % yopiladi",
-            "group": "Exit"
-        },
-        # Trailing sozlamalari
-        {
-            "key": "entryTrailingThreshold", "label": "Entry Trail Threshold %", "type": "number",
-            "default": 1.0, "min": 0, "max": 10.0, "step": 0.1,
-            "description": "Entry uchun narx harakati threshold (0=off)",
-            "group": "Trailing"
-        },
-        {
-            "key": "entryTrailingRetracement", "label": "Entry Trail Retrace %", "type": "number",
-            "default": 0.5, "min": 0, "max": 5.0, "step": 0.1,
-            "description": "Entry uchun retrace talabi",
-            "group": "Trailing"
-        },
-        {
-            "key": "trailingGridRatio", "label": "Trailing/Grid Ratio", "type": "number",
-            "default": 0.5, "min": 0, "max": 1.0, "step": 0.1,
-            "description": "0=faqat grid, 1=faqat trailing, 0.5=aralash",
-            "group": "Trailing"
-        },
-        # Risk sozlamalari
-        {
-            "key": "walletExposureLimit", "label": "Wallet Exposure Limit", "type": "number",
+            "key": "trailingActivatePct", "label": "Trail Activate %", "type": "number",
             "default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1,
-            "description": "Maksimal pozitsiya / balans nisbati",
+            "description": "Qaysi profit % da trailing boshlanadi",
+            "group": "Exit"
+        },
+        {
+            "key": "slPercent", "label": "Stop Loss %", "type": "number",
+            "default": 3.0, "min": 0.5, "max": 20.0, "step": 0.1,
+            "description": "Fallback stop loss (trailing yo'q bo'lganda)",
+            "group": "Exit"
+        },
+        {
+            "key": "useOppositeSignalExit", "label": "Opposite Signal Exit", "type": "boolean",
+            "default": True,
+            "description": "Qarama-qarshi signal bilan pozitsiya yopish (Death Cross → close LONG)",
+            "group": "Exit"
+        },
+        # Capital sozlamalari
+        {
+            "key": "capitalEngagement", "label": "Capital Engagement %", "type": "number",
+            "default": 15, "min": 1, "max": 100, "step": 1,
+            "description": "Har bir savdo uchun balansning necha %",
             "group": "Risk"
         },
+        # Risk sozlamalari
         {
             "key": "maxLossPercent", "label": "Max Loss %", "type": "number",
             "default": 20, "min": 0, "max": 100, "step": 1,
             "description": "Umumiy maksimal zarar (0=off)",
             "group": "Risk"
-        },
-        {
-            "key": "hslRedThreshold", "label": "HSL Red Threshold", "type": "number",
-            "default": 50, "min": 5, "max": 100, "step": 5,
-            "description": "Panic close uchun drawdown % (HSL Red tier)",
-            "group": "Risk"
-        },
-        # Unstuck sozlamalari
-        {
-            "key": "unstuckThreshold", "label": "Unstuck Threshold %", "type": "number",
-            "default": 3, "min": 0.1, "max": 50, "step": 0.1,
-            "description": "Necha % zararda stuck hisoblanadi",
-            "group": "Unstuck"
-        },
-        {
-            "key": "unstuckClosePct", "label": "Unstuck Close %", "type": "number",
-            "default": 5, "min": 1, "max": 100, "step": 1,
-            "description": "Har unstuck da pozitsiyaning necha % yopiladi",
-            "group": "Unstuck"
         },
         # Fee sozlamalari
         {
@@ -421,12 +380,11 @@ async def info():
     """Bot ma'lumotlari va configSchema — HEMA UI uchun"""
     return {
         "id": BOT_ID,
-        "name": BOT_NAME,
+        "name": "Trend Following Robot",
         "version": BOT_VERSION,
-        "description": "Passivbot ilhomlangan contrarian market-maker. "
-                       "EMA anchor asosida grid limit orderlar qo'yadi. "
-                       "Trailing retrace, unstucking, HSL tiered stop.",
-        "strategy": "GRID",
+        "description": "EMA crossover + Ichimoku Cloud confirmation + ADX trend strength filter. "
+                       "3-fazali trailing stop, opposite signal exit, multi-timeframe tasdiqlash.",
+        "strategy": "MOMENTUM",
         "mode": "AUTOMATIC",
         "supportedPairs": SUPPORTED_PAIRS,
         "supportedExchanges": ["bitget"],
@@ -435,9 +393,9 @@ async def info():
         "riskLevel": "MEDIUM",
         "configSchema": CONFIG_SCHEMA,
         "features": [
-            "grid_trading", "trailing_entry", "trailing_exit",
-            "unstucking", "hsl_tiered_stop", "wallet_exposure_limit",
-            "volatility_adaptive_grid", "fee_aware",
+            "ema_crossover", "ichimoku_cloud", "adx_filter",
+            "trailing_stop", "opposite_signal_exit", "multi_timeframe",
+            "fee_aware",
         ],
     }
 

@@ -2,7 +2,7 @@
 Trend Robot - Session Manager
 
 Multi-user session boshqaruvi va TrendRobotWithWebhook subclass.
-HEMA RSI/Hedge bot pattern ga mos.
+HEMA trend bot pattern ga mos.
 
 SessionManager — Singleton, barcha foydalanuvchi sessionlarini boshqaradi.
 TrendRobotWithWebhook — TrendRobot ni kengaytiradi:
@@ -20,8 +20,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Any
 
-from .config import RobotConfig, APIConfig, TradingConfig, GridConfig, EntryConfig, ExitConfig
-from .config import TrailingConfig, UnstuckConfig, RiskConfig
+from .config import (
+    RobotConfig, APIConfig, TradingConfig, GridConfig,
+    EMAConfig, IchimokuConfig, TrendConfig, MTFConfig, ExitConfig, RiskConfig,
+)
 from .robot import TrendRobot, RobotState
 from .api_client import BitgetClient
 from .webhook_client import WebhookClient
@@ -74,32 +76,36 @@ class UserSession:
     margin_mode: str = "crossed"
     trade_amount: float = 0.0
 
-    # Grid sozlamalari (HEMA dan keladi)
-    n_positions: int = 5
-    grid_spacing_pct: float = 0.005
-    grid_spacing_volatility_weight: float = 0.5
-    ema_span_0: float = 100.0
-    ema_span_1: float = 1000.0
-    initial_ema_dist: float = 0.003
-    initial_qty_pct: float = 0.01
-    double_down_factor: float = 0.7
-    close_grid_markup_start: float = 0.006
-    close_grid_markup_end: float = 0.009
-    close_grid_qty_pct: float = 0.5
+    # EMA sozlamalari
+    ema_fast_period: int = 9
+    ema_slow_period: int = 21
 
-    # Trailing
-    entry_trailing_threshold: float = 0.01
-    entry_trailing_retracement: float = 0.005
-    trailing_grid_ratio: float = 0.5
+    # Ichimoku sozlamalari
+    ichimoku_enabled: bool = True
+
+    # Trend (ADX) sozlamalari
+    adx_period: int = 14
+    adx_threshold: float = 25.0
+
+    # MTF sozlamalari
+    mtf_enabled: bool = True
+
+    # Exit sozlamalari
+    use_trailing_stop: bool = True
+    trailing_activate_pct: float = 1.0
+    trailing_floor_pct: float = 0.3
+    use_opposite_signal_exit: bool = True
+    sl_percent: float = 3.0
+
+    # Grid sozlamalari (optional)
+    grid_enabled: bool = False
 
     # Risk
-    wallet_exposure_limit: float = 1.0
     max_loss_percent: float = 20.0
-    hsl_red_threshold: float = 0.5
+    max_daily_loss_percent: float = 10.0
 
-    # Unstuck
-    unstuck_threshold: float = 0.03
-    unstuck_close_pct: float = 0.05
+    # Capital engagement
+    capital_engagement: float = 0.15
 
     # Fee
     taker_fee_rate: float = 0.001
@@ -118,7 +124,7 @@ class UserSession:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#                       PASSIV GRID ROBOT WITH WEBHOOK
+#                       TREND ROBOT WITH WEBHOOK
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TrendRobotWithWebhook(TrendRobot):
@@ -126,7 +132,7 @@ class TrendRobotWithWebhook(TrendRobot):
     TrendRobot ni kengaytiradi — webhook va state persistence qo'shadi.
 
     Server mode da bu klass ishlatiladi (TrendRobot emas).
-    RSI/Hedge bot pattern ga mos override lar:
+    Override lar:
         - initialize() — position reconciliation
         - _tick() — webhook status updates
         - stop() — close all + webhook events
@@ -225,7 +231,7 @@ class SessionManager:
     Multi-user session boshqaruvchisi — Singleton.
 
     Har bir foydalanuvchi uchun alohida robot instance yaratadi.
-    HEMA RSI/Hedge/Sure-Fire bot pattern ga mos API.
+    HEMA trend bot pattern ga mos API.
     """
 
     _instance: Optional["SessionManager"] = None
@@ -301,29 +307,27 @@ class SessionManager:
             leverage=int(cs.get("leverage", s.get("leverage", 10))),
             margin_mode=str(cs.get("marginMode", s.get("marginMode", "crossed"))),
             trade_amount=float(cs.get("tradeAmount", s.get("tradeAmount", 0))),
-            # Grid
-            n_positions=int(cs.get("nPositions", s.get("nPositions", 5))),
-            grid_spacing_pct=float(cs.get("gridSpacingPct", s.get("gridSpacingPct", 0.5))) / 100,
-            grid_spacing_volatility_weight=float(cs.get("gridSpacingVolatilityWeight", 0.5)),
-            ema_span_0=float(cs.get("emaSpan0", s.get("emaSpan0", 100))),
-            ema_span_1=float(cs.get("emaSpan1", s.get("emaSpan1", 1000))),
-            initial_ema_dist=float(cs.get("initialEmaDist", s.get("initialEmaDist", 0.3))) / 100,
-            initial_qty_pct=float(cs.get("initialQtyPct", s.get("initialQtyPct", 1))) / 100,
-            double_down_factor=float(cs.get("doubleDownFactor", s.get("doubleDownFactor", 0.7))),
-            close_grid_markup_start=float(cs.get("closeGridMarkupStart", 0.6)) / 100,
-            close_grid_markup_end=float(cs.get("closeGridMarkupEnd", 0.9)) / 100,
-            close_grid_qty_pct=float(cs.get("closeGridQtyPct", 50)) / 100,
-            # Trailing
-            entry_trailing_threshold=float(cs.get("entryTrailingThreshold", 1.0)) / 100,
-            entry_trailing_retracement=float(cs.get("entryTrailingRetracement", 0.5)) / 100,
-            trailing_grid_ratio=float(cs.get("trailingGridRatio", 0.5)),
+            # EMA
+            ema_fast_period=int(cs.get("emaFastPeriod", s.get("emaFastPeriod", 9))),
+            ema_slow_period=int(cs.get("emaSlowPeriod", s.get("emaSlowPeriod", 21))),
+            # Ichimoku
+            ichimoku_enabled=str(cs.get("ichimokuEnabled", s.get("ichimokuEnabled", "true"))).lower() in ("true", "1"),
+            # Trend (ADX)
+            adx_period=int(cs.get("adxPeriod", s.get("adxPeriod", 14))),
+            adx_threshold=float(cs.get("adxThreshold", s.get("adxThreshold", 25.0))),
+            # MTF
+            mtf_enabled=str(cs.get("mtfEnabled", s.get("mtfEnabled", "true"))).lower() in ("true", "1"),
+            # Exit
+            use_trailing_stop=str(cs.get("useTrailingStop", s.get("useTrailingStop", "true"))).lower() in ("true", "1"),
+            trailing_activate_pct=float(cs.get("trailingActivatePct", s.get("trailingActivatePct", 1.0))),
+            trailing_floor_pct=float(cs.get("trailingFloorPct", s.get("trailingFloorPct", 0.3))),
+            use_opposite_signal_exit=str(cs.get("useOppositeSignalExit", s.get("useOppositeSignalExit", "true"))).lower() in ("true", "1"),
+            sl_percent=float(cs.get("slPercent", s.get("slPercent", 3.0))),
+            # Capital engagement
+            capital_engagement=float(cs.get("capitalEngagement", s.get("capitalEngagement", 15))) / 100,
             # Risk
-            wallet_exposure_limit=float(cs.get("walletExposureLimit", 1.0)),
-            max_loss_percent=float(cs.get("maxLossPercent", 20)),
-            hsl_red_threshold=float(cs.get("hslRedThreshold", 50)) / 100,
-            # Unstuck
-            unstuck_threshold=float(cs.get("unstuckThreshold", 3)) / 100,
-            unstuck_close_pct=float(cs.get("unstuckClosePct", 5)) / 100,
+            max_loss_percent=float(cs.get("maxLossPercent", s.get("maxLossPercent", 20))),
+            max_daily_loss_percent=float(cs.get("maxDailyLossPercent", s.get("maxDailyLossPercent", 10))),
             # Fee
             taker_fee_rate=fee_rate,
             maker_fee_rate=fee_rate,
@@ -441,14 +445,17 @@ class SessionManager:
         """Session sozlamalari"""
         session = self._find_session(user_id)
         return {
-            "nPositions": session.n_positions,
-            "gridSpacingPct": session.grid_spacing_pct * 100,
-            "emaSpan0": session.ema_span_0,
-            "emaSpan1": session.ema_span_1,
-            "initialEmaDist": session.initial_ema_dist * 100,
-            "initialQtyPct": session.initial_qty_pct * 100,
-            "doubleDownFactor": session.double_down_factor,
-            "walletExposureLimit": session.wallet_exposure_limit,
+            "emaFastPeriod": session.ema_fast_period,
+            "emaSlowPeriod": session.ema_slow_period,
+            "ichimokuEnabled": session.ichimoku_enabled,
+            "adxPeriod": session.adx_period,
+            "adxThreshold": session.adx_threshold,
+            "mtfEnabled": session.mtf_enabled,
+            "useTrailingStop": session.use_trailing_stop,
+            "trailingActivatePct": session.trailing_activate_pct,
+            "useOppositeSignalExit": session.use_opposite_signal_exit,
+            "slPercent": session.sl_percent,
+            "capitalEngagement": session.capital_engagement * 100,
             "maxLossPercent": session.max_loss_percent,
             "feeRate": session.taker_fee_rate * 100,
         }
@@ -557,39 +564,37 @@ class SessionManager:
                 LEVERAGE=session.leverage,
                 MARGIN_MODE=session.margin_mode,
             ),
-            grid=GridConfig(
-                N_POSITIONS=session.n_positions,
-                GRID_SPACING_PCT=session.grid_spacing_pct,
-                GRID_SPACING_VOLATILITY_WEIGHT=session.grid_spacing_volatility_weight,
+            ema=EMAConfig(
+                FAST_PERIOD=session.ema_fast_period,
+                SLOW_PERIOD=session.ema_slow_period,
             ),
-            entry=EntryConfig(
-                EMA_SPAN_0=session.ema_span_0,
-                EMA_SPAN_1=session.ema_span_1,
-                INITIAL_EMA_DIST=session.initial_ema_dist,
-                INITIAL_QTY_PCT=session.initial_qty_pct,
-                DOUBLE_DOWN_FACTOR=session.double_down_factor,
+            ichimoku=IchimokuConfig(
+                ENABLED=session.ichimoku_enabled,
+            ),
+            trend=TrendConfig(
+                ADX_PERIOD=session.adx_period,
+                ADX_THRESHOLD=session.adx_threshold,
+            ),
+            mtf=MTFConfig(
+                ENABLED=session.mtf_enabled,
             ),
             exit=ExitConfig(
-                CLOSE_GRID_MARKUP_START=session.close_grid_markup_start,
-                CLOSE_GRID_MARKUP_END=session.close_grid_markup_end,
-                CLOSE_GRID_QTY_PCT=session.close_grid_qty_pct,
+                USE_TRAILING_STOP=session.use_trailing_stop,
+                TRAILING_ACTIVATE_PCT=session.trailing_activate_pct,
+                TRAILING_FLOOR_PCT=session.trailing_floor_pct,
+                USE_OPPOSITE_SIGNAL_EXIT=session.use_opposite_signal_exit,
+                SL_PERCENT=session.sl_percent,
             ),
-            trailing=TrailingConfig(
-                ENTRY_THRESHOLD_PCT=session.entry_trailing_threshold,
-                ENTRY_RETRACEMENT_PCT=session.entry_trailing_retracement,
-                ENTRY_TRAILING_GRID_RATIO=session.trailing_grid_ratio,
-            ),
-            unstuck=UnstuckConfig(
-                THRESHOLD=session.unstuck_threshold,
-                CLOSE_PCT=session.unstuck_close_pct,
+            grid=GridConfig(
+                ENABLED=session.grid_enabled,
             ),
             risk=RiskConfig(
-                WALLET_EXPOSURE_LIMIT=session.wallet_exposure_limit,
                 MAX_LOSS_PERCENT=session.max_loss_percent,
-                HSL_RED_THRESHOLD=session.hsl_red_threshold,
+                MAX_DAILY_LOSS_PERCENT=session.max_daily_loss_percent,
                 TAKER_FEE_RATE=session.taker_fee_rate,
                 MAKER_FEE_RATE=session.maker_fee_rate,
             ),
+            CAPITAL_ENGAGEMENT=session.capital_engagement,
         )
 
 
