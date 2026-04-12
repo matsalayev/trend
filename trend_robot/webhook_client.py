@@ -75,7 +75,7 @@ class WebhookClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         self._worker_task: Optional[asyncio.Task] = None
-        self._user_id: Optional[str] = None
+        self._user_id: Optional[str] = getattr(config, 'user_id', None)
         self._dropped_events: int = 0
         self._stopped = False
 
