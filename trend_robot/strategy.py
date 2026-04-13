@@ -121,6 +121,7 @@ class TrendStrategy:
         self._tick_count: int = 0
         self._last_processed_ts: int = 0
         self._symbol_info = None
+        self._initial_state_checked: bool = False
 
         logger.info("TrendStrategy yaratildi")
 
@@ -170,6 +171,19 @@ class TrendStrategy:
             return SignalType.NONE
 
         # ─── Layer 1: EMA Crossover ─────────────────────────────────────────
+        # Agar crossover hali bo'lmagan bo'lsa, lekin EMA state aniq bo'lsa — birinchi signal sifatida ishlatish
+        if ema_signal is None and not self._initial_state_checked:
+            self._initial_state_checked = True
+            fast = self.ema_crossover.fast.value
+            slow = self.ema_crossover.slow.value
+            if fast is not None and slow is not None:
+                if fast > slow:
+                    ema_signal = 'golden_cross'
+                    logger.info(f'Initial EMA state: fast({fast:.2f}) > slow({slow:.2f}) → synthetic golden_cross')
+                elif slow > fast:
+                    ema_signal = 'death_cross'
+                    logger.info(f'Initial EMA state: slow({slow:.2f}) > fast({fast:.2f}) → synthetic death_cross')
+
         if ema_signal is None:
             return SignalType.NONE
 

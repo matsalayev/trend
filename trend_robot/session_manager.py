@@ -411,9 +411,12 @@ class TrendRobotWithWebhook(TrendRobot):
                 "adxThreshold": self.config.trend.ADX_THRESHOLD,
                 "trailingActivate": self.config.exit.TRAILING_ACTIVATE_PCT,
                 "trailingSL": self.config.exit.TRAILING_FLOOR_PCT,
+                "slPercent": self.config.exit.SL_PERCENT,
                 "ichimokuEnabled": self.config.ichimoku.ENABLED,
                 "leverage": self.config.trading.LEVERAGE,
                 "timeframe": self.config.mtf.PRIMARY_TIMEFRAME,
+                "baseLot": round(self.config.CAPITAL_ENGAGEMENT * 100, 1),
+                "feeRate": self._session.taker_fee_rate,
             }
 
             # Runtime
