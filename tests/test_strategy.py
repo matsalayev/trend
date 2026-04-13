@@ -11,7 +11,7 @@ from trend_robot.strategy import TrendStrategy, SignalType, Position, TrailingPh
 from trend_robot.indicators import (
     Candle, EMAIndicator, EMACrossover, IchimokuCloud, ADXIndicator, ATRIndicator, money_round
 )
-from trend_robot.config import RobotConfig, EMAConfig, IchimokuConfig, TrendConfig, MTFConfig, ExitConfig, RiskConfig
+from trend_robot.config import RobotConfig, EMAConfig, IchimokuConfig, TrendConfig, MTFConfig, ExitConfig, RiskConfig, TradingConfig
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
