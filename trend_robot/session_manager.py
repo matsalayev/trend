@@ -851,6 +851,16 @@ class SessionManager:
             session.robot.config = self._create_robot_config(session)
             logger.info(f"Robot config updated live: {session.session_key}")
 
+            # Leverage o'zgarganda Bitget ga ham o'rnatish
+            if "leverage" in cs and session.robot.client:
+                try:
+                    await session.robot.client.set_leverage(
+                        session.trading_pair, session.leverage
+                    )
+                    logger.info(f"Bitget leverage yangilandi: {session.leverage}x")
+                except Exception as e:
+                    logger.warning(f"Bitget leverage o'rnatishda xato: {e}")
+
         logger.info(f"Settings updated: {session.session_key}")
 
     async def close_positions(self, user_id: str):
