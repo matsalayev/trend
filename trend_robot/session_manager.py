@@ -182,7 +182,11 @@ class TrendRobotWithWebhook(TrendRobot):
         symbol = self.config.trading.SYMBOL
         from .strategy import SignalType
         side = "buy" if signal == SignalType.LONG else "sell"
-        size = self.strategy.calculate_position_size(self._current_price, self._balance)
+        # Allocated balance cheklovi
+        effective_balance = self._balance
+        if hasattr(self, '_session_trade_amount') and self._session_trade_amount > 0:
+            effective_balance = min(self._balance, self._session_trade_amount)
+        size = self.strategy.calculate_position_size(self._current_price, effective_balance)
 
         if size <= 0:
             logger.warning("Pozitsiya hajmi 0 — order qo'yilmaydi")
