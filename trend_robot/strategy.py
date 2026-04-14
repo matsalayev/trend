@@ -271,6 +271,8 @@ class TrendStrategy:
             return None
 
         trailing = self.trailing_long if position.side == "long" else self.trailing_short
+        if position.entry_price <= 0:
+            return None  # Division by zero himoyasi
         pnl_pct = abs(current_price - position.entry_price) / position.entry_price * 100
 
         is_long = position.side == "long"
