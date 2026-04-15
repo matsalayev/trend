@@ -201,8 +201,19 @@ class TrendRobotWithWebhook(TrendRobot):
             if not order_id:
                 order_id = f"trend-{int(time.time() * 1000)}"
 
-            # SL qo'yish
+            # Darhol pozitsiyani belgilash — duplikat order oldini olish
             pos_side = "long" if signal == SignalType.LONG else "short"
+            from .strategy import Position
+            new_pos = Position(
+                id=order_id, side=pos_side,
+                entry_price=self._current_price, size=size,
+            )
+            if pos_side == "long":
+                self.strategy.long_position = new_pos
+            else:
+                self.strategy.short_position = new_pos
+
+            # SL qo'yish
             sl_price = self.strategy.calculate_sl_price(self._current_price, pos_side)
 
             if sl_price > 0:
