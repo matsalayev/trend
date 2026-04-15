@@ -32,6 +32,9 @@ LABEL maintainer="HEMA Team"
 LABEL description="Trend Trading Robot"
 LABEL version="1.0.0"
 
+# curl for Coolify healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 # Security: Run as non-root user
 RUN groupadd -r trendbot && useradd -r -g trendbot trendbot
 
