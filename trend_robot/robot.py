@@ -98,6 +98,7 @@ class TrendRobot:
         self.client: Optional[BitgetClient] = None
         self.strategy: Optional[TrendStrategy] = None
         self.candle_cache: Optional[CandleCache] = None
+        self.mtf_candle_cache: Optional[CandleCache] = None  # MTF confirmation timeframe
 
         self._balance = 0.0
         self._equity = 0.0
@@ -151,6 +152,7 @@ class TrendRobot:
             if self._symbol_info:
                 self.strategy.set_symbol_info(self._symbol_info)
             self.candle_cache = CandleCache()
+            self.mtf_candle_cache = CandleCache()  # MTF confirmation uchun alohida kesh
 
             logger.info(f"Initialized: {symbol}, balance=${self._balance:.2f}")
         except Exception as e:
@@ -273,7 +275,18 @@ class TrendRobot:
 
         # 7. Signal tekshirish (faqat pozitsiya yo'q bo'lganda)
         if not in_position and candles:
-            signal = self.strategy.check_signal(candles, self._current_price)
+            # MTF candles olish (confirmation timeframe)
+            mtf_candles = None
+            if self.config.mtf.ENABLED and self.mtf_candle_cache:
+                try:
+                    mtf_tf = self.config.mtf.CONFIRM_TIMEFRAME
+                    mtf_candles = await self.mtf_candle_cache.get_candles(
+                        self.client, symbol, mtf_tf, 200
+                    )
+                except Exception as e:
+                    logger.warning(f"MTF candles olishda xato: {e}")
+
+            signal = self.strategy.check_signal(candles, self._current_price, mtf_candles)
 
             if signal != SignalType.NONE:
                 async with self._order_lock:
@@ -302,17 +315,21 @@ class TrendRobot:
                     logger.error(f"Opposite signal exit xatosi: {e}")
                 continue
 
-            # Trailing stop update
+            # Trailing stop update (retry bilan)
             new_stop = self.strategy.update_trailing_stop(pos, self._current_price)
             if new_stop is not None:
-                try:
-                    await self.client.modify_tpsl(
-                        symbol=symbol,
-                        side=pos.side,
-                        sl_price=new_stop,
-                    )
-                except Exception as e:
-                    logger.debug(f"Trailing stop update xatosi: {e}")
+                for ts_attempt in range(2):
+                    try:
+                        await self.client.modify_tpsl(
+                            symbol=symbol,
+                            side=pos.side,
+                            sl_price=new_stop,
+                        )
+                        break
+                    except Exception as e:
+                        logger.warning(f"Trailing stop update xatosi (urinish {ts_attempt+1}/2): {e}")
+                        if ts_attempt < 1:
+                            await asyncio.sleep(0.5)
 
             # Trailing stop hit check
             if self.strategy.check_trailing_stop_hit(pos, self._current_price):
@@ -338,17 +355,28 @@ class TrendRobot:
             logger.info(f"OPENING {signal.value}: {side} {size:.6f} @ ${self._current_price:.2f}")
             await self.client.place_order(symbol, side, "open", size, "market")
 
-            # SL qo'yish
+            # SL qo'yish (retry bilan — SL yo'q pozitsiya xavfli)
             pos_side = "long" if signal == SignalType.LONG else "short"
             sl_price = self.strategy.calculate_sl_price(self._current_price, pos_side)
 
             if sl_price > 0:
-                await self.client.modify_tpsl(
-                    symbol=symbol,
-                    side=pos_side,
-                    sl_price=sl_price,
-                )
-                logger.info(f"SL qo'yildi: ${sl_price:.2f}")
+                sl_placed = False
+                for attempt in range(3):
+                    try:
+                        await self.client.modify_tpsl(
+                            symbol=symbol,
+                            side=pos_side,
+                            sl_price=sl_price,
+                        )
+                        logger.info(f"SL qo'yildi: ${sl_price:.2f}")
+                        sl_placed = True
+                        break
+                    except Exception as sl_err:
+                        logger.warning(f"SL qo'yishda xato (urinish {attempt+1}/3): {sl_err}")
+                        if attempt < 2:
+                            await asyncio.sleep(1)
+                if not sl_placed:
+                    logger.critical(f"SL 3 marta urinib bo'lmadi! Pozitsiya himoyasiz: {pos_side}")
 
         except Exception as e:
             logger.error(f"Order xatosi: {e}")
