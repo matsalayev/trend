@@ -223,8 +223,8 @@ class TrendRobot:
             except Exception:
                 pass
 
-        # 4. Pozitsiyalar (har 10 tick)
-        if self._tick_count % 10 == 0 or self._tick_count <= 2:
+        # 4. Pozitsiyalar (har 3 tick — sync tezroq, phantom oldini oladi)
+        if self._tick_count % 3 == 0 or self._tick_count <= 2:
             long_pos = None
             short_pos = None
             try:
