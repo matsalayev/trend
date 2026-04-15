@@ -222,9 +222,9 @@ class TrendRobot:
                 pass
 
         # 4. Pozitsiyalar (har 10 tick)
-        long_pos = None
-        short_pos = None
         if self._tick_count % 10 == 0 or self._tick_count <= 2:
+            long_pos = None
+            short_pos = None
             try:
                 raw = await self.client.get_positions(symbol)
                 for p in raw:
@@ -246,10 +246,14 @@ class TrendRobot:
                             short_pos = pos
             except Exception:
                 pass
+            # Pozitsiyalarni faqat sync qilinganda yangilash
+            # Aks holda non-sync ticklarda None yozilib, session_manager
+            # "pozitsiya yo'qoldi" deb soxta trade_closed webhook yuboradi
+            self.strategy.long_position = long_pos
+            self.strategy.short_position = short_pos
 
-        self.strategy.long_position = long_pos
-        self.strategy.short_position = short_pos
-        in_position = long_pos is not None or short_pos is not None
+        in_position = (self.strategy.long_position is not None
+                       or self.strategy.short_position is not None)
 
         # 5. Risk check — use RiskConfig directly
         if self._balance < self._initial_balance * (1 - self.config.risk.MAX_LOSS_PERCENT / 100):
