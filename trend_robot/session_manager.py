@@ -283,8 +283,23 @@ class TrendRobotWithWebhook(TrendRobot):
             await self._send_status_update()
 
     async def _detect_closed_position(self, prev_pos, cur_pos, side: str):
-        """Pozitsiya yo'qolganini aniqlash va trade_closed yuborish"""
+        """Pozitsiya yo'qolganini aniqlash va trade_closed yuborish.
+
+        BUG FIX: faqat haqiqiy yopilishlarni yuborish:
+        - Robot RUNNING holatida bo'lishi kerak (STARTING/STOPPING emas)
+        - prev_pos haqiqiy ma'lumotlarga ega (entry_price > 0, size > 0)
+        - Bu soxta trade_closed spam ning oldini oladi.
+        """
+        # Guard: faqat RUNNING holatida trade_closed yuborish
+        if self.state != RobotState.RUNNING:
+            return
+
         if prev_pos is not None and cur_pos is None:
+            # Prev position haqiqiy bo'lishi kerak (never-tracked = skip)
+            entry = getattr(prev_pos, "entry_price", 0) or 0
+            size = getattr(prev_pos, "size", 0) or 0
+            if entry <= 0 or size <= 0:
+                return
             # Pozitsiya yopilgan
             try:
                 if side == "long":
@@ -474,29 +489,18 @@ class TrendRobotWithWebhook(TrendRobot):
             logger.warning(f"Status update xatosi: {e}", exc_info=True)
 
     async def stop(self):
-        """Stop + har bir pozitsiya uchun trade_closed webhook + status_changed"""
+        """Stop + pozitsiyalarni yopish + status_changed.
+
+        BUG FIX: trade_closed webhook NO LONGER sent with reason=BOT_STOPPED.
+        Previously, every restart/stop would fetch exchange positions and fire
+        trade_closed for each — this caused 3000+ fake close webhooks filling
+        bot_webhook_logs. Real TP/SL closes are already handled by
+        _detect_closed_position() during active running state. Stop events
+        are communicated via status_changed only.
+        """
         logger.info("TrendRobotWithWebhook stopping...")
 
-        # Avval pozitsiyalarni o'qib olish (trade_closed uchun)
-        positions_to_close = []
-        if self.client:
-            try:
-                symbol = self.config.trading.SYMBOL
-                raw = await self.client.get_positions(symbol)
-                for p in raw:
-                    side = p.side if hasattr(p, 'side') else "long"
-                    size = p.size if hasattr(p, 'size') else 0
-                    entry_price = p.entry_price if hasattr(p, 'entry_price') else 0
-                    if size > 0:
-                        positions_to_close.append({
-                            "side": side,
-                            "size": size,
-                            "entry_price": entry_price,
-                        })
-            except Exception as e:
-                logger.warning(f"Stop: pozitsiyalarni o'qishda xato: {e}")
-
-        # Pozitsiyalarni yopish
+        # Pozitsiyalarni yopish (webhook yubormasdan)
         if self.client:
             try:
                 symbol = self.config.trading.SYMBOL
@@ -504,29 +508,6 @@ class TrendRobotWithWebhook(TrendRobot):
                 logger.info("Barcha pozitsiyalar yopildi")
             except Exception as e:
                 logger.error(f"Pozitsiya yopishda xato: {e}")
-
-        # Har bir pozitsiya uchun trade_closed webhook
-        if self._webhook and positions_to_close:
-            for pos in positions_to_close:
-                try:
-                    if pos["side"] == "long":
-                        pnl = (self._current_price - pos["entry_price"]) * pos["size"]
-                    else:
-                        pnl = (pos["entry_price"] - self._current_price) * pos["size"]
-
-                    await self._webhook.send_trade_closed(
-                        user_bot_id=self._session.user_bot_id,
-                        symbol=self.config.trading.SYMBOL,
-                        side=pos["side"],
-                        entry_price=pos["entry_price"],
-                        exit_price=self._current_price,
-                        quantity=pos["size"],
-                        pnl=pnl,
-                        reason="BOT_STOPPED",
-                    )
-                    logger.info(f"Stop trade_closed: {pos['side']} pnl=${pnl:.4f}")
-                except Exception as e:
-                    logger.warning(f"Stop trade_closed webhook xatosi: {e}")
 
         # Webhook — status_changed
         if self._webhook:
@@ -703,44 +684,117 @@ class SessionManager:
     # ─── START / STOP / PAUSE / RESUME ──────────────────────────────────────
 
     async def start_session(self, user_id: str):
-        """Trading boshlash"""
-        session = self._find_session(user_id)
-        if session.status == SessionStatus.RUNNING:
-            raise ValueError("Allaqachon ishlayapti")
+        """Trading boshlash — thread-safe, race-condition protected"""
+        # R9: Lock ichida status tekshiruv + STARTING ga o'tkazish (atomik)
+        async with self._lock:
+            session = self._find_session(user_id)
 
-        session.status = SessionStatus.STARTING
+            if session.status == SessionStatus.RUNNING:
+                raise ValueError(f"User {user_id} allaqachon ishlayapti")
+            if session.status == SessionStatus.STARTING:
+                raise ValueError(f"User {user_id} hozir boshlanmoqda (STARTING)")
+            if session.status == SessionStatus.STOPPING:
+                raise ValueError(f"User {user_id} to'xtatilmoqda, kuting")
 
-        # Robot config yaratish
-        config = self._create_robot_config(session)
+            # Eski task bor bo'lsa tozalash (PAUSED, STOPPED, ERROR dan start)
+            old_task = session.task
+            old_robot = session.robot
 
-        # Robot yaratish
-        robot = TrendRobotWithWebhook(config, session)
-        session.robot = robot
+            session.status = SessionStatus.STARTING
+            session.task = None
+            session.robot = None
 
-        # Initialize va start
+        # Lock tashqarisida: eski task/robot cleanup (boshqa sessionlarni bloklamaslik)
+        if old_task and not old_task.done():
+            old_task.cancel()
+            try:
+                await asyncio.wait_for(old_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception as e:
+                logger.warning(f"Old task cleanup xato: {e}")
+
+        if old_robot:
+            try:
+                await asyncio.wait_for(old_robot.stop(), timeout=5.0)
+            except Exception as e:
+                logger.warning(f"Old robot cleanup xato: {e}")
+
+        # Long-running initialization lock tashqarisida
         try:
+            config = self._create_robot_config(session)
+            robot = TrendRobotWithWebhook(config, session)
             await robot.initialize()
-            session.status = SessionStatus.RUNNING
-            session.task = asyncio.create_task(robot.start())
+
+            # Atomik status flip + task create
+            async with self._lock:
+                session.robot = robot
+                session.task = asyncio.create_task(robot.start())
+                session.status = SessionStatus.RUNNING
+
             logger.info(f"Session boshlandi: {session.session_key}")
+
         except Exception as e:
-            session.status = SessionStatus.ERROR
+            # Xatoda ham lock bilan ERROR status
+            async with self._lock:
+                session.status = SessionStatus.ERROR
             logger.error(f"Start xatosi: {e}")
             raise
 
     async def stop_session(self, user_id: str):
-        """Trading to'xtatish"""
-        session = self._find_session(user_id)
-        session.status = SessionStatus.STOPPING
+        """Trading to'xtatish — timeout va try/finally bilan himoyalangan"""
+        # R9: Lock ichida status tekshiruv + STOPPING ga o'tkazish
+        async with self._lock:
+            session = self._find_session(user_id)
 
-        if session.robot:
-            await session.robot.stop()
+            if session.status not in (SessionStatus.RUNNING, SessionStatus.PAUSED):
+                # STOPPED, ERROR, REGISTERED holatlarida stop zaruri yo'q — silent ok
+                if session.status in (SessionStatus.STOPPED, SessionStatus.REGISTERED):
+                    return
+                if session.status == SessionStatus.STOPPING:
+                    raise ValueError(f"User {user_id} allaqachon to'xtatilmoqda")
+                if session.status == SessionStatus.STARTING:
+                    raise ValueError(f"User {user_id} hozir boshlanmoqda, keyinroq urinib ko'ring")
+                if session.status == SessionStatus.ERROR:
+                    # ERROR holatidan ham stop qilish mumkin — cleanup qilish
+                    pass
 
-        if session.task and not session.task.done():
-            session.task.cancel()
+            robot = session.robot
+            task = session.task
+            session.status = SessionStatus.STOPPING
 
-        session.status = SessionStatus.STOPPED
-        logger.info(f"Session to'xtatildi: {session.session_key}")
+        # Lock tashqarisida cleanup
+        STOP_TIMEOUT = 15.0  # robot.stop() uchun maksimal vaqt
+        try:
+            # 1. Robot ni to'xtatish (timeout bilan)
+            if robot:
+                try:
+                    await asyncio.wait_for(robot.stop(), timeout=STOP_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"robot.stop() {STOP_TIMEOUT}s ichida tugamadi — "
+                        f"majburan davom etamiz"
+                    )
+                except Exception as e:
+                    logger.warning(f"robot.stop() xato: {e}")
+
+            # 2. Task cancel + wait (fire-and-forget emas!)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                except Exception as e:
+                    logger.warning(f"Task cancel xato: {e}")
+
+        finally:
+            # HAR DOIM STOPPED ga o'tkazish — STOPPING da muzlab qolmaslik
+            async with self._lock:
+                session.status = SessionStatus.STOPPED
+                session.robot = None
+                session.task = None
+            logger.info(f"Session to'xtatildi: {session.session_key}")
 
     async def pause_session(self, user_id: str):
         """Pauza"""
