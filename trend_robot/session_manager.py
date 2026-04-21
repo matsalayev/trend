@@ -742,10 +742,21 @@ class SessionManager:
             raise
 
     async def stop_session(self, user_id: str):
-        """Trading to'xtatish — timeout va try/finally bilan himoyalangan"""
+        """Trading to'xtatish — timeout va try/finally bilan himoyalangan.
+
+        IDEMPOTENT: agar session topilmasa (restart'dan keyin in-memory
+        yo'qolgan bo'lsa), xato qaytarmaydi — maqsad bajarilgan hisoblanadi.
+        """
         # R9: Lock ichida status tekshiruv + STOPPING ga o'tkazish
         async with self._lock:
-            session = self._find_session(user_id)
+            try:
+                session = self._find_session(user_id)
+            except ValueError:
+                logger.info(
+                    f"Stop: session {user_id} topilmadi (ehtimol restart'dan "
+                    f"keyin yo'qolgan) — idempotent stop, OK qaytarilmoqda"
+                )
+                return
 
             if session.status not in (SessionStatus.RUNNING, SessionStatus.PAUSED):
                 # STOPPED, ERROR, REGISTERED holatlarida stop zaruri yo'q — silent ok
@@ -797,15 +808,23 @@ class SessionManager:
             logger.info(f"Session to'xtatildi: {session.session_key}")
 
     async def pause_session(self, user_id: str):
-        """Pauza"""
-        session = self._find_session(user_id)
+        """Pauza — idempotent (session yo'q bo'lsa ham OK)"""
+        try:
+            session = self._find_session(user_id)
+        except ValueError:
+            logger.info(f"Pause: session {user_id} yo'q — idempotent OK")
+            return
         if session.robot:
             await session.robot.pause()
         session.status = SessionStatus.PAUSED
 
     async def resume_session(self, user_id: str):
-        """Davom ettirish"""
-        session = self._find_session(user_id)
+        """Davom ettirish — idempotent"""
+        try:
+            session = self._find_session(user_id)
+        except ValueError:
+            logger.warning(f"Resume: session {user_id} yo'q — HEMA start yuborish kerak")
+            raise
         if session.robot:
             await session.robot.resume()
         session.status = SessionStatus.RUNNING
@@ -929,27 +948,43 @@ class SessionManager:
         logger.info(f"Settings updated: {session.session_key}")
 
     async def close_positions(self, user_id: str):
-        """Pozitsiyalarni yopish"""
-        session = self._find_session(user_id)
+        """Pozitsiyalarni yopish — idempotent"""
+        try:
+            session = self._find_session(user_id)
+        except ValueError:
+            logger.info(f"Close positions: session {user_id} yo'q — idempotent OK")
+            return
         if session.robot and session.robot.client:
             await session.robot.client.close_all_positions(session.trading_pair)
 
     async def force_sync(self, user_id: str):
-        """Exchange bilan sync"""
-        session = self._find_session(user_id)
+        """Exchange bilan sync — idempotent"""
+        try:
+            session = self._find_session(user_id)
+        except ValueError:
+            logger.info(f"Force sync: session {user_id} yo'q — idempotent OK")
+            return
         if session.state_persistence:
             session.state_persistence.clear_positions()
         logger.info(f"Force sync: {session.session_key}")
 
     async def unregister_user(self, user_id: str):
-        """Foydalanuvchini o'chirish"""
-        session = self._find_session(user_id)
+        """Foydalanuvchini o'chirish — idempotent"""
+        try:
+            session = self._find_session(user_id)
+        except ValueError:
+            logger.info(f"Unregister: session {user_id} yo'q — idempotent OK")
+            return
+
         await self.stop_session(user_id)
 
         if session.webhook_client:
-            await session.webhook_client.stop()
+            try:
+                await asyncio.wait_for(session.webhook_client.stop(), timeout=5.0)
+            except Exception as e:
+                logger.warning(f"Webhook client stop xato: {e}")
 
-        del self._sessions[session.session_key]
+        self._sessions.pop(session.session_key, None)
         self._sessions_by_user_id.pop(session.user_id, None)
         self._sessions_by_bot_id.pop(session.user_bot_id, None)
 
