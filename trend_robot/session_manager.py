@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import (
     RobotConfig, APIConfig, TradingConfig, ExitConfig, RiskConfig,
+    TrendConfig, apply_preset_to_config, is_supported_pair, SUPPORTED_PAIRS,
 )
 from .robot import TrendRobot, RobotState
 from .api_client import BitgetClient
@@ -91,6 +92,28 @@ class UserSession:
     # Fee
     taker_fee_rate: float = 0.001
     maker_fee_rate: float = 0.001
+
+    # ── v2.0 Smart Trend params (preset + user override) ─────────────────
+    ema_fast: Optional[int] = None
+    ema_slow: Optional[int] = None
+    adx_threshold: Optional[float] = None
+    adx_period: Optional[int] = None
+    atr_period: Optional[int] = None
+    supertrend_period: Optional[int] = None
+    supertrend_multiplier: Optional[float] = None
+    trailing_atr_multiplier: Optional[float] = None
+    trailing_activation_percent: Optional[float] = None
+    initial_sl_percent: Optional[float] = None
+    use_htf_filter: Optional[bool] = None
+    htf_ema_fast: Optional[int] = None
+    htf_ema_slow: Optional[int] = None
+    use_partial_tp: Optional[bool] = None
+    partial_tp1_percent: Optional[float] = None
+    partial_tp1_size_pct: Optional[float] = None
+    partial_tp2_percent: Optional[float] = None
+    partial_tp2_size_pct: Optional[float] = None
+    max_drawdown_percent: Optional[float] = None
+    cooldown_bars_after_sl: Optional[int] = None
 
     # Webhook
     webhook_url: str = ""
@@ -516,6 +539,21 @@ class SessionManager:
         # Fee rate (HEMA % da yuboradi, biz decimal ga o'tkazamiz)
         fee_rate = float(cs.get("feeRate", s.get("feeRate", 0.1))) / 100
 
+        trading_pair = str(cs.get('tradingPair', s.get('tradingPair', cs.get('symbol', s.get('symbol', 'BTCUSDT')))))
+
+        # v2.0 Smart Trend params (preset/customSettings camelCase → snake_case)
+        def _opt_float(k: str) -> Optional[float]:
+            v = cs.get(k)
+            return float(v) if v is not None else None
+
+        def _opt_int(k: str) -> Optional[int]:
+            v = cs.get(k)
+            return int(v) if v is not None else None
+
+        def _opt_bool(k: str) -> Optional[bool]:
+            v = cs.get(k)
+            return bool(v) if v is not None else None
+
         session = UserSession(
             user_id=user_id,
             user_bot_id=user_bot_id,
@@ -525,21 +563,38 @@ class SessionManager:
             api_secret=exchange.get("apiSecret", ""),
             passphrase=exchange.get("passphrase", ""),
             is_demo=is_demo,
-            trading_pair=str(cs.get('tradingPair', s.get('tradingPair', cs.get('symbol', s.get('symbol', 'BTCUSDT'))))),
+            trading_pair=trading_pair,
             leverage=int(cs.get("leverage", s.get("leverage", 10))),
             margin_mode=str(cs.get("marginMode", s.get("marginMode", "crossed"))),
             trade_amount=float(cs.get("tradeAmount", s.get("tradeAmount", 0))),
             tick_interval=float(cs.get("tickInterval", s.get("tickInterval", 1.0))),
-            # Exit (skeleton)
             sl_percent=float(cs.get("slPercent", s.get("slPercent", 3.0))),
-            # Capital engagement
             capital_engagement=float(cs.get("capitalEngagement", s.get("capitalEngagement", 15))) / 100,
-            # Risk
             max_loss_percent=float(cs.get("maxLossPercent", s.get("maxLossPercent", 20))),
             max_daily_loss_percent=float(cs.get("maxDailyLossPercent", s.get("maxDailyLossPercent", 10))),
-            # Fee
             taker_fee_rate=fee_rate,
             maker_fee_rate=fee_rate,
+            # v2.0 Smart Trend params from customSettings
+            ema_fast=_opt_int("emaFast"),
+            ema_slow=_opt_int("emaSlow"),
+            adx_threshold=_opt_float("adxThreshold"),
+            adx_period=_opt_int("adxPeriod"),
+            atr_period=_opt_int("atrPeriod"),
+            supertrend_period=_opt_int("supertrendPeriod"),
+            supertrend_multiplier=_opt_float("supertrendMultiplier"),
+            trailing_atr_multiplier=_opt_float("trailingAtrMultiplier"),
+            trailing_activation_percent=_opt_float("trailingActivationPercent"),
+            initial_sl_percent=_opt_float("initialSlPercent"),
+            use_htf_filter=_opt_bool("useHtfFilter"),
+            htf_ema_fast=_opt_int("htfEmaFast"),
+            htf_ema_slow=_opt_int("htfEmaSlow"),
+            use_partial_tp=_opt_bool("usePartialTp"),
+            partial_tp1_percent=_opt_float("partialTp1Percent"),
+            partial_tp1_size_pct=_opt_float("partialTp1SizePct"),
+            partial_tp2_percent=_opt_float("partialTp2Percent"),
+            partial_tp2_size_pct=_opt_float("partialTp2SizePct"),
+            max_drawdown_percent=_opt_float("maxDrawdownPercent"),
+            cooldown_bars_after_sl=_opt_int("cooldownBarsAfterSl"),
             # Webhook
             webhook_url=webhook_url,
             webhook_secret=webhook_secret,
@@ -921,8 +976,15 @@ class SessionManager:
         raise ValueError(f"Session topilmadi: {user_id}")
 
     def _create_robot_config(self, session: UserSession) -> RobotConfig:
-        """Session dan RobotConfig yaratish — skeleton (strategy-specific olib tashlandi)"""
-        return RobotConfig(
+        """
+        Session dan RobotConfig yaratish.
+
+        1. Pair asosida preset yuklanadi (BotPairConfig.customSettings dan HEMA yuboradi).
+        2. User customSettings preset'ni override qiladi.
+        3. Strategy parametrlari (ema_fast, adx_threshold, va h.k.) shu yerdan o'rnatiladi.
+        """
+        # Bazaviy config yaratish
+        config = RobotConfig(
             api=APIConfig(
                 API_KEY=session.api_key,
                 SECRET_KEY=session.api_secret,
@@ -935,17 +997,73 @@ class SessionManager:
                 MARGIN_MODE=session.margin_mode,
             ),
             exit=ExitConfig(
-                SL_PERCENT=session.sl_percent,
+                SL_PERCENT=getattr(session, "sl_percent", 3.0),
             ),
             risk=RiskConfig(
-                MAX_LOSS_PERCENT=session.max_loss_percent,
-                MAX_DAILY_LOSS_PERCENT=session.max_daily_loss_percent,
-                TAKER_FEE_RATE=session.taker_fee_rate,
-                MAKER_FEE_RATE=session.maker_fee_rate,
+                MAX_LOSS_PERCENT=getattr(session, "max_loss_percent", 20.0),
+                MAX_DAILY_LOSS_PERCENT=getattr(session, "max_daily_loss_percent", 10.0),
+                TAKER_FEE_RATE=getattr(session, "taker_fee_rate", 0.001),
+                MAKER_FEE_RATE=getattr(session, "maker_fee_rate", 0.001),
             ),
-            TICK_INTERVAL=session.tick_interval,
-            CAPITAL_ENGAGEMENT=session.capital_engagement,
+            trend=TrendConfig(),  # default, preset override qiladi
+            TICK_INTERVAL=getattr(session, "tick_interval", 1.0),
+            CAPITAL_ENGAGEMENT=getattr(session, "capital_engagement", 0.15),
         )
+
+        # Per-pair preset qo'llanish + user override
+        user_overrides = self._extract_user_overrides(session)
+        config = apply_preset_to_config(config, session.trading_pair, user_overrides)
+
+        logger.info(
+            f"Config for {session.user_id}: symbol={config.trading.SYMBOL}, "
+            f"leverage={config.trading.LEVERAGE}x, "
+            f"EMA({config.trend.ema_fast}/{config.trend.ema_slow}), "
+            f"ADX>{config.trend.adx_threshold}, "
+            f"ST×{config.trend.supertrend_multiplier}, "
+            f"HTF={config.trend.use_htf_filter}, "
+            f"PTP={config.trend.use_partial_tp}"
+        )
+        return config
+
+    def _extract_user_overrides(self, session: "UserSession") -> dict:
+        """
+        Session field'laridan user override'lar.
+        HEMA customSettings orqali yuborilgan qiymatlar shu yerda yig'iladi.
+        Session attribute bor bo'lsa va noldan farq qilsa — override sifatida ishlatiladi.
+        """
+        overrides: dict = {}
+        # Leverage — har doim user tanlovi (> 0 bo'lsa)
+        if getattr(session, "leverage", 0) > 0:
+            overrides["leverage"] = session.leverage
+
+        # customSettings'dagi barcha v2.0 maydonlar
+        field_map = {
+            "ema_fast": "ema_fast",
+            "ema_slow": "ema_slow",
+            "adx_threshold": "adx_threshold",
+            "adx_period": "adx_period",
+            "atr_period": "atr_period",
+            "supertrend_period": "supertrend_period",
+            "supertrend_multiplier": "supertrend_multiplier",
+            "trailing_atr_multiplier": "trailing_atr_multiplier",
+            "trailing_activation_percent": "trailing_activation_percent",
+            "initial_sl_percent": "initial_sl_percent",
+            "use_htf_filter": "use_htf_filter",
+            "htf_ema_fast": "htf_ema_fast",
+            "htf_ema_slow": "htf_ema_slow",
+            "use_partial_tp": "use_partial_tp",
+            "partial_tp1_percent": "partial_tp1_percent",
+            "partial_tp1_size_pct": "partial_tp1_size_pct",
+            "partial_tp2_percent": "partial_tp2_percent",
+            "partial_tp2_size_pct": "partial_tp2_size_pct",
+            "max_drawdown_percent": "max_drawdown_percent",
+            "cooldown_bars_after_sl": "cooldown_bars_after_sl",
+        }
+        for attr, key in field_map.items():
+            val = getattr(session, attr, None)
+            if val is not None:
+                overrides[key] = val
+        return overrides
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

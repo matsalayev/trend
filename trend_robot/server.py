@@ -351,21 +351,79 @@ async def health():
 @app.get("/api/v1/info")
 async def info():
     """Bot ma'lumotlari va configSchema — HEMA UI uchun"""
+    from .config import SYMBOL_PRESETS
+    # Preset pair'lar (DB birlamchi manba — bu fallback)
+    pair_presets = {}
+    for sym, p in SYMBOL_PRESETS.items():
+        pair_presets[sym] = {
+            "leverage": p.get("leverage", 10),
+            "emaFast": p.get("ema_fast", 9),
+            "emaSlow": p.get("ema_slow", 21),
+            "adxThreshold": p.get("adx_threshold", 25.0),
+            "supertrendMultiplier": p.get("supertrend_multiplier", 3.0),
+            "trailingAtrMultiplier": p.get("trailing_atr_multiplier", 1.5),
+            "initialSlPercent": p.get("initial_sl_percent", 3.0),
+            "useHtfFilter": p.get("use_htf_filter", True),
+            "usePartialTp": p.get("use_partial_tp", True),
+            "maxDrawdownPercent": p.get("max_drawdown_percent", 20.0),
+            "backtestReturn": p.get("_backtest_return", 0.0),
+            "backtestWinrate": p.get("_backtest_winrate", 0.0),
+            "backtestTrades": p.get("_backtest_trades", 0),
+            "backtestDrawdown": p.get("_backtest_drawdown", 0.0),
+        }
+    supported_pairs = list(SYMBOL_PRESETS.keys()) or SUPPORTED_PAIRS
     return {
         "id": BOT_ID,
         "name": "Trend Following Robot",
         "version": BOT_VERSION,
-        "description": "Trend Following Robot — skeleton. Strategiya qayta yozilmoqda.",
-        "strategy": "TREND",
+        "description": (
+            "Smart Trend Following v2.0 — EMA crossover + Supertrend + ADX filter + "
+            "Higher-Timeframe validation. 3-phase trailing stop, partial TP, "
+            "circuit breaker protection."
+        ),
+        "strategy": "TREND_FOLLOWING",
         "mode": "AUTOMATIC",
-        "supportedPairs": SUPPORTED_PAIRS,
+        "supportedPairs": supported_pairs,
         "supportedExchanges": ["bitget"],
         "minCapital": 50,
         "recommendedCapital": 500,
         "riskLevel": "MEDIUM",
+        "pairPresets": pair_presets,
         "configSchema": CONFIG_SCHEMA,
-        "features": ["skeleton", "fee_aware"],
+        "features": [
+            "ema_crossover", "supertrend", "adx_filter", "htf_filter",
+            "trailing_stop_3phase", "partial_tp", "circuit_breaker",
+            "per_pair_presets",
+        ],
     }
+
+
+@app.get("/api/v1/presets")
+async def get_presets():
+    """Per-pair backtest optimallashtirilgan preset'lar."""
+    from .config import SYMBOL_PRESETS
+    result = {}
+    for sym, p in SYMBOL_PRESETS.items():
+        result[sym] = {
+            "leverage": p.get("leverage", 10),
+            "emaFast": p.get("ema_fast", 9),
+            "emaSlow": p.get("ema_slow", 21),
+            "adxThreshold": p.get("adx_threshold", 25.0),
+            "supertrendPeriod": p.get("supertrend_period", 10),
+            "supertrendMultiplier": p.get("supertrend_multiplier", 3.0),
+            "trailingAtrMultiplier": p.get("trailing_atr_multiplier", 1.5),
+            "initialSlPercent": p.get("initial_sl_percent", 3.0),
+            "useHtfFilter": p.get("use_htf_filter", True),
+            "usePartialTp": p.get("use_partial_tp", True),
+            "maxDrawdownPercent": p.get("max_drawdown_percent", 20.0),
+            "backtest": {
+                "returnPercent": p.get("_backtest_return", 0.0),
+                "winrate": p.get("_backtest_winrate", 0.0),
+                "trades": p.get("_backtest_trades", 0),
+                "drawdown": p.get("_backtest_drawdown", 0.0),
+            },
+        }
+    return {"presets": result, "supportedPairs": list(result.keys())}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

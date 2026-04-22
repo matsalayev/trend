@@ -1,17 +1,24 @@
 """
-Trend Robot - Configuration (Skeleton)
+Trend Robot - Configuration (v2.0 Smart Trend Following)
 
-Strategy-specific konfiguratsiyalar (EMA, Ichimoku, ADX, MTF, Grid) olib
-tashlandi — ular qayta yoziladigan strategiya bilan birga qo'shiladi.
-Infratuzilma uchun zarur konfiglar saqlangan.
+EMA crossover + ADX + Supertrend + HTF filter bilan ishlaydigan v2.0
+strategiyasi uchun config. Per-pair preset'lar presets.json fayldan
+yuklanadi (backtest tomonidan optimallashtirilgan).
 """
 
-import os
+import json
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#                               ENV HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 def _get_env(key: str, default: str = "") -> str:
@@ -37,6 +44,11 @@ def _get_env_bool(key: str, default: bool = False) -> bool:
     return val in ("true", "1", "yes", "on")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#                               CORE CONFIGS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 @dataclass(frozen=True)
 class APIConfig:
     API_KEY: str = ""
@@ -56,7 +68,7 @@ class APIConfig:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class TradingConfig:
     SYMBOL: str = "BTCUSDT"
     PRODUCT_TYPE: str = "USDT-FUTURES"
@@ -92,7 +104,6 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class ExitConfig:
-    """Generic exit config — strategy-specific (trailing) olib tashlandi"""
     SL_PERCENT: float = 3.0
 
     @classmethod
@@ -102,13 +113,99 @@ class ExitConfig:
         )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#                           TREND STRATEGY CONFIG (v2.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class TrendConfig:
+    """
+    Smart Trend Following v2.0 strategiya parametrlari.
+
+    Default qiymatlar — konservativ. Har bir pair uchun haqiqiy optimal
+    qiymatlar presets.json'dan yuklanadi (apply_preset_to_config orqali).
+    """
+
+    # ── Timeframes ─────────────────────────────────────────────────────────
+    timeframe: str = "15m"
+    htf_timeframe: str = "4H"
+
+    # ── EMA crossover ──────────────────────────────────────────────────────
+    ema_fast: int = 9
+    ema_slow: int = 21
+
+    # ── Volatility / trend strength ────────────────────────────────────────
+    atr_period: int = 14
+    adx_period: int = 14
+    adx_threshold: float = 25.0
+
+    # ── Supertrend ─────────────────────────────────────────────────────────
+    supertrend_period: int = 10
+    supertrend_multiplier: float = 3.0
+
+    # ── HTF filter ─────────────────────────────────────────────────────────
+    use_htf_filter: bool = True
+    htf_ema_fast: int = 21
+    htf_ema_slow: int = 50
+
+    # ── Stop loss / trailing ───────────────────────────────────────────────
+    initial_sl_percent: float = 3.0
+    trailing_activation_percent: float = 1.0
+    trailing_atr_multiplier: float = 1.5
+
+    # ── Partial TP ─────────────────────────────────────────────────────────
+    use_partial_tp: bool = True
+    partial_tp1_percent: float = 2.0
+    partial_tp1_size_pct: float = 0.33
+    partial_tp2_percent: float = 5.0
+    partial_tp2_size_pct: float = 0.33
+
+    # ── Risk / cooldown ────────────────────────────────────────────────────
+    max_drawdown_percent: float = 20.0
+    cooldown_bars_after_sl: int = 5
+
+    @classmethod
+    def from_env(cls) -> "TrendConfig":
+        return cls(
+            timeframe=_get_env("TIMEFRAME", "15m"),
+            htf_timeframe=_get_env("HTF_TIMEFRAME", "4H"),
+            ema_fast=_get_env_int("EMA_FAST", 9),
+            ema_slow=_get_env_int("EMA_SLOW", 21),
+            atr_period=_get_env_int("ATR_PERIOD", 14),
+            adx_period=_get_env_int("ADX_PERIOD", 14),
+            adx_threshold=_get_env_float("ADX_THRESHOLD", 25.0),
+            supertrend_period=_get_env_int("SUPERTREND_PERIOD", 10),
+            supertrend_multiplier=_get_env_float("SUPERTREND_MULTIPLIER", 3.0),
+            use_htf_filter=_get_env_bool("USE_HTF_FILTER", True),
+            htf_ema_fast=_get_env_int("HTF_EMA_FAST", 21),
+            htf_ema_slow=_get_env_int("HTF_EMA_SLOW", 50),
+            initial_sl_percent=_get_env_float("INITIAL_SL_PERCENT", 3.0),
+            trailing_activation_percent=_get_env_float("TRAILING_ACTIVATION_PERCENT", 1.0),
+            trailing_atr_multiplier=_get_env_float("TRAILING_ATR_MULTIPLIER", 1.5),
+            use_partial_tp=_get_env_bool("USE_PARTIAL_TP", True),
+            partial_tp1_percent=_get_env_float("PARTIAL_TP1_PERCENT", 2.0),
+            partial_tp1_size_pct=_get_env_float("PARTIAL_TP1_SIZE_PCT", 0.33),
+            partial_tp2_percent=_get_env_float("PARTIAL_TP2_PERCENT", 5.0),
+            partial_tp2_size_pct=_get_env_float("PARTIAL_TP2_SIZE_PCT", 0.33),
+            max_drawdown_percent=_get_env_float("MAX_DRAWDOWN_PERCENT", 20.0),
+            cooldown_bars_after_sl=_get_env_int("COOLDOWN_BARS_AFTER_SL", 5),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#                               ROBOT CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 @dataclass
 class RobotConfig:
-    """Master konfiguratsiya — skeleton"""
+    """Master konfiguratsiya"""
     api: APIConfig = field(default_factory=APIConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     exit: ExitConfig = field(default_factory=ExitConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    trend: TrendConfig = field(default_factory=TrendConfig)
 
     TICK_INTERVAL: float = 1.0
     CAPITAL_ENGAGEMENT: float = 0.15
@@ -122,6 +219,7 @@ class RobotConfig:
             trading=TradingConfig.from_env(),
             exit=ExitConfig.from_env(),
             risk=RiskConfig.from_env(),
+            trend=TrendConfig.from_env(),
             TICK_INTERVAL=_get_env_float("TICK_INTERVAL", 1.0),
             CAPITAL_ENGAGEMENT=_get_env_float("CAPITAL_ENGAGEMENT", 0.15),
             STATE_DIR=_get_env("STATE_DIR", "/data/state"),
@@ -134,13 +232,17 @@ class RobotConfig:
             errors.append(f"LEVERAGE {self.trading.LEVERAGE} — 1-125 orasida")
         if self.exit.SL_PERCENT <= 0:
             errors.append(f"SL_PERCENT {self.exit.SL_PERCENT} — 0 dan katta")
+        if self.trend.ema_fast >= self.trend.ema_slow:
+            errors.append(
+                f"ema_fast ({self.trend.ema_fast}) >= ema_slow ({self.trend.ema_slow})"
+            )
         if errors:
             raise ValueError(f"Config xatolari: {'; '.join(errors)}")
         logger.info("Konfiguratsiya tekshirildi")
 
 
 def validate_trading_settings(settings: dict) -> Optional[str]:
-    """HEMA customSettings validation — skeleton"""
+    """HEMA customSettings validation"""
     checks = [
         ("slPercent", 0, 50, "float"),
         ("leverage", 1, 125, "int"),
@@ -148,6 +250,24 @@ def validate_trading_settings(settings: dict) -> Optional[str]:
         ("feeRate", 0, 1, "float"),
         ("maxLossPercent", 0, 100, "float"),
         ("maxDailyLossPercent", 0, 100, "float"),
+        ("emaFast", 2, 200, "int"),
+        ("emaSlow", 3, 500, "int"),
+        ("adxThreshold", 0, 100, "float"),
+        ("adxPeriod", 2, 100, "int"),
+        ("atrPeriod", 2, 100, "int"),
+        ("supertrendPeriod", 2, 100, "int"),
+        ("supertrendMultiplier", 0.1, 20, "float"),
+        ("trailingAtrMultiplier", 0.1, 20, "float"),
+        ("trailingActivationPercent", 0, 50, "float"),
+        ("initialSlPercent", 0, 50, "float"),
+        ("htfEmaFast", 2, 500, "int"),
+        ("htfEmaSlow", 3, 500, "int"),
+        ("partialTp1Percent", 0, 100, "float"),
+        ("partialTp2Percent", 0, 100, "float"),
+        ("partialTp1SizePct", 0, 1, "float"),
+        ("partialTp2SizePct", 0, 1, "float"),
+        ("maxDrawdownPercent", 0, 100, "float"),
+        ("cooldownBarsAfterSl", 0, 1000, "int"),
     ]
     for name, mn, mx, vt in checks:
         if name in settings:
@@ -158,3 +278,168 @@ def validate_trading_settings(settings: dict) -> Optional[str]:
             except (ValueError, TypeError):
                 return f"{name} — {vt} bo'lishi kerak"
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#                           SYMBOL PRESETS (v2.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Per-pair optimal parametrlar backtest asosida topilgan va presets.json
+# fayliga yozilgan. User faqat supported pair'lar orasidan tanlashi mumkin.
+# Preset avtomatik qo'llaniladi; user customSettings orqali override qila oladi.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+SUPPORTED_PAIRS: List[str] = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "LINKUSDT", "AVAXUSDT", "ADAUSDT",
+]
+
+
+_DEFAULT_PRESET = {
+    "leverage": 10,
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "adx_threshold": 25.0,
+    "adx_period": 14,
+    "atr_period": 14,
+    "supertrend_period": 10,
+    "supertrend_multiplier": 3.0,
+    "trailing_atr_multiplier": 1.5,
+    "trailing_activation_percent": 1.0,
+    "initial_sl_percent": 3.0,
+    "use_htf_filter": True,
+    "htf_ema_fast": 21,
+    "htf_ema_slow": 50,
+    "use_partial_tp": True,
+    "partial_tp1_percent": 2.0,
+    "partial_tp1_size_pct": 0.33,
+    "partial_tp2_percent": 5.0,
+    "partial_tp2_size_pct": 0.33,
+    "max_drawdown_percent": 20.0,
+    "cooldown_bars_after_sl": 5,
+}
+
+
+def _load_presets_from_file() -> dict:
+    """presets.json faylidan yuklash (backtest tomonidan yaratiladi)."""
+    paths = [
+        Path(__file__).parent / "presets.json",
+        Path(__file__).parent.parent / "backtest" / "presets.json",
+    ]
+    for p in paths:
+        if not p.exists():
+            continue
+        try:
+            with p.open() as f:
+                data = json.load(f)
+            result = {}
+            for sym, r in data.items():
+                cfg = r.get("config", r)
+                result[sym] = {
+                    "leverage": int(cfg.get("leverage", 10)),
+                    "ema_fast": int(cfg.get("ema_fast", 9)),
+                    "ema_slow": int(cfg.get("ema_slow", 21)),
+                    "adx_threshold": float(cfg.get("adx_threshold", 25.0)),
+                    "adx_period": int(cfg.get("adx_period", 14)),
+                    "atr_period": int(cfg.get("atr_period", 14)),
+                    "supertrend_period": int(cfg.get("supertrend_period", 10)),
+                    "supertrend_multiplier": float(cfg.get("supertrend_multiplier", 3.0)),
+                    "trailing_atr_multiplier": float(cfg.get("trailing_atr_multiplier", 1.5)),
+                    "trailing_activation_percent": float(
+                        cfg.get("trailing_activation_percent", 1.0)
+                    ),
+                    "initial_sl_percent": float(cfg.get("initial_sl_percent", 3.0)),
+                    "use_htf_filter": bool(cfg.get("use_htf_filter", True)),
+                    "htf_ema_fast": int(cfg.get("htf_ema_fast", 21)),
+                    "htf_ema_slow": int(cfg.get("htf_ema_slow", 50)),
+                    "use_partial_tp": bool(cfg.get("use_partial_tp", True)),
+                    "partial_tp1_percent": float(cfg.get("partial_tp1_percent", 2.0)),
+                    "partial_tp1_size_pct": float(cfg.get("partial_tp1_size_pct", 0.33)),
+                    "partial_tp2_percent": float(cfg.get("partial_tp2_percent", 5.0)),
+                    "partial_tp2_size_pct": float(cfg.get("partial_tp2_size_pct", 0.33)),
+                    "max_drawdown_percent": float(cfg.get("max_drawdown_percent", 20.0)),
+                    "cooldown_bars_after_sl": int(cfg.get("cooldown_bars_after_sl", 5)),
+                    # Backtest metadatasi (UI da ko'rsatish uchun)
+                    "_backtest_return": r.get("return_percent", 0.0),
+                    "_backtest_winrate": r.get("winrate", 0.0),
+                    "_backtest_trades": r.get("total_trades", 0),
+                    "_backtest_drawdown": r.get("max_drawdown_percent", 0.0),
+                }
+            logger.info(f"Loaded {len(result)} pair presets from {p}")
+            return result
+        except Exception as e:
+            logger.warning(f"Preset load xato ({p}): {e}")
+    logger.info("presets.json topilmadi — default preset ishlatiladi")
+    return {}
+
+
+SYMBOL_PRESETS: dict = _load_presets_from_file()
+
+
+def get_preset(symbol: str) -> dict:
+    """Symbol uchun preset — agar topilmasa default."""
+    return SYMBOL_PRESETS.get(symbol.upper(), _DEFAULT_PRESET).copy()
+
+
+def is_supported_pair(symbol: str) -> bool:
+    sym = symbol.upper()
+    return sym in SUPPORTED_PAIRS or sym in SYMBOL_PRESETS
+
+
+def apply_preset_to_config(
+    config: RobotConfig, symbol: str, user_overrides: Optional[dict] = None
+) -> RobotConfig:
+    """
+    Preset'ni config'ga qo'llash.
+
+    Priority: user_overrides > preset > hardcoded defaults
+    user_overrides — snake_case kalitlar bilan dict.
+    """
+    preset = get_preset(symbol)
+    merged = preset.copy()
+    if user_overrides:
+        for k, v in user_overrides.items():
+            if v is None:
+                continue
+            merged[k] = v
+
+    config.trading.SYMBOL = symbol
+
+    if "leverage" in merged:
+        config.trading.LEVERAGE = int(merged["leverage"])
+
+    t = config.trend
+    for key in (
+        "ema_fast", "ema_slow", "atr_period", "adx_period",
+        "supertrend_period", "htf_ema_fast", "htf_ema_slow",
+        "cooldown_bars_after_sl",
+    ):
+        if key in merged:
+            setattr(t, key, int(merged[key]))
+
+    for key in (
+        "adx_threshold", "supertrend_multiplier", "trailing_atr_multiplier",
+        "trailing_activation_percent", "initial_sl_percent",
+        "partial_tp1_percent", "partial_tp1_size_pct",
+        "partial_tp2_percent", "partial_tp2_size_pct",
+        "max_drawdown_percent",
+    ):
+        if key in merged:
+            setattr(t, key, float(merged[key]))
+
+    for key in ("use_htf_filter", "use_partial_tp"):
+        if key in merged:
+            setattr(t, key, bool(merged[key]))
+
+    if "timeframe" in merged:
+        t.timeframe = str(merged["timeframe"])
+    if "htf_timeframe" in merged:
+        t.htf_timeframe = str(merged["htf_timeframe"])
+
+    # initial_sl_percent → ExitConfig.SL_PERCENT (tickda ishlatish uchun)
+    # ExitConfig frozen, shuning uchun yangi instance yaratamiz
+    if "initial_sl_percent" in merged:
+        config.exit = ExitConfig(SL_PERCENT=float(merged["initial_sl_percent"]))
+
+    return config
