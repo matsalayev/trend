@@ -173,98 +173,71 @@ ERROR_CODE_MAP = {
 
 CONFIG_SCHEMA = {
     "settings": [
-        # EMA sozlamalari
+        # Trading
         {
-            "key": "emaFastPeriod", "label": "EMA Fast Period", "type": "number",
-            "default": 9, "min": 2, "max": 200, "step": 1,
-            "description": "Tez EMA davri (Golden/Death Cross uchun)",
-            "group": "EMA"
+            "key": "symbol", "label": "Trading Pair", "type": "select",
+            "default": "BTCUSDT", "options": SUPPORTED_PAIRS,
+            "description": "Savdo juftligi",
+            "group": "Trading"
         },
         {
-            "key": "emaSlowPeriod", "label": "EMA Slow Period", "type": "number",
-            "default": 21, "min": 5, "max": 500, "step": 1,
-            "description": "Sekin EMA davri (Golden/Death Cross uchun)",
-            "group": "EMA"
-        },
-        # Ichimoku sozlamalari
-        {
-            "key": "ichimokuEnabled", "label": "Ichimoku Confirmation", "type": "boolean",
-            "default": True,
-            "description": "Ichimoku Cloud tasdiqlash (Tenkan/Kijun crossover + cloud position)",
-            "group": "Ichimoku"
-        },
-        # ADX sozlamalari
-        {
-            "key": "adxPeriod", "label": "ADX Period", "type": "number",
-            "default": 14, "min": 5, "max": 50, "step": 1,
-            "description": "ADX indikator davri (trend kuchini o'lchash)",
-            "group": "Trend"
+            "key": "leverage", "label": "Leverage", "type": "number",
+            "default": 10, "min": 1, "max": 125, "step": 1,
+            "description": "Futures leverage",
+            "group": "Trading"
         },
         {
-            "key": "adxThreshold", "label": "ADX Threshold", "type": "number",
-            "default": 25, "min": 10, "max": 50, "step": 1,
-            "description": "Minimal ADX qiymati (25+ = kuchli trend)",
-            "group": "Trend"
-        },
-        # MTF sozlamalari
-        {
-            "key": "mtfEnabled", "label": "Multi-Timeframe", "type": "boolean",
-            "default": True,
-            "description": "Multi-timeframe tasdiqlash (5m signal, 15m confirm, 1H trend)",
-            "group": "Trend"
-        },
-        # Exit sozlamalari
-        {
-            "key": "useTrailingStop", "label": "Trailing Stop", "type": "boolean",
-            "default": True,
-            "description": "3-fazali trailing stop (breakeven → trail)",
-            "group": "Exit"
+            "key": "marginMode", "label": "Margin Mode", "type": "select",
+            "default": "crossed", "options": ["crossed", "isolated"],
+            "description": "Margin rejimi",
+            "group": "Trading"
         },
         {
-            "key": "trailingActivatePct", "label": "Trail Activate %", "type": "number",
-            "default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1,
-            "description": "Qaysi profit % da trailing boshlanadi",
-            "group": "Exit"
+            "key": "tradeAmount", "label": "Trade Amount (USDT)", "type": "number",
+            "default": 0, "min": 0, "max": 1000000, "step": 1,
+            "description": "Ajratilgan balans (0 = cheksiz)",
+            "group": "Trading"
         },
+        # Exit
         {
             "key": "slPercent", "label": "Stop Loss %", "type": "number",
-            "default": 3.0, "min": 0.5, "max": 20.0, "step": 0.1,
-            "description": "Fallback stop loss (trailing yo'q bo'lganda)",
+            "default": 3.0, "min": 0.1, "max": 50.0, "step": 0.1,
+            "description": "Fixed stop loss foizda",
             "group": "Exit"
         },
-        {
-            "key": "useOppositeSignalExit", "label": "Opposite Signal Exit", "type": "boolean",
-            "default": True,
-            "description": "Qarama-qarshi signal bilan pozitsiya yopish (Death Cross → close LONG)",
-            "group": "Exit"
-        },
-        # Capital sozlamalari
+        # Capital
         {
             "key": "capitalEngagement", "label": "Capital Engagement %", "type": "number",
             "default": 15, "min": 1, "max": 100, "step": 1,
             "description": "Har bir savdo uchun balansning necha %",
             "group": "Risk"
         },
-        # Risk sozlamalari
+        # Risk
         {
             "key": "maxLossPercent", "label": "Max Loss %", "type": "number",
             "default": 20, "min": 0, "max": 100, "step": 1,
             "description": "Umumiy maksimal zarar (0=off)",
             "group": "Risk"
         },
-        # Fee sozlamalari
+        {
+            "key": "maxDailyLossPercent", "label": "Max Daily Loss %", "type": "number",
+            "default": 10, "min": 0, "max": 100, "step": 1,
+            "description": "Kunlik maksimal zarar",
+            "group": "Risk"
+        },
+        # Fee
         {
             "key": "feeRate", "label": "Fee Rate %", "type": "number",
             "default": 0.1, "min": 0, "max": 1.0, "step": 0.01,
             "description": "Taker fee rate (per side, %)",
-            "group": "Fee Settings"
+            "group": "Fee"
         },
-        # Umumiy
+        # Runtime
         {
-            "key": "marginMode", "label": "Margin Mode", "type": "select",
-            "default": "crossed", "options": ["crossed", "isolated"],
-            "description": "Margin rejimi",
-            "group": "General"
+            "key": "tickInterval", "label": "Tick Interval (s)", "type": "number",
+            "default": 1.0, "min": 0.1, "max": 60.0, "step": 0.1,
+            "description": "Tick loop interval (sekund)",
+            "group": "Runtime"
         },
     ]
 }
@@ -382,9 +355,8 @@ async def info():
         "id": BOT_ID,
         "name": "Trend Following Robot",
         "version": BOT_VERSION,
-        "description": "EMA crossover + Ichimoku Cloud confirmation + ADX trend strength filter. "
-                       "3-fazali trailing stop, opposite signal exit, multi-timeframe tasdiqlash.",
-        "strategy": "MOMENTUM",
+        "description": "Trend Following Robot — skeleton. Strategiya qayta yozilmoqda.",
+        "strategy": "TREND",
         "mode": "AUTOMATIC",
         "supportedPairs": SUPPORTED_PAIRS,
         "supportedExchanges": ["bitget"],
@@ -392,11 +364,7 @@ async def info():
         "recommendedCapital": 500,
         "riskLevel": "MEDIUM",
         "configSchema": CONFIG_SCHEMA,
-        "features": [
-            "ema_crossover", "ichimoku_cloud", "adx_filter",
-            "trailing_stop", "opposite_signal_exit", "multi_timeframe",
-            "fee_aware",
-        ],
+        "features": ["skeleton", "fee_aware"],
     }
 
 

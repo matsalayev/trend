@@ -16,6 +16,7 @@ Tick tartibi:
 
 import asyncio
 import logging
+import os
 import time
 from enum import Enum
 from typing import Optional, List
@@ -26,6 +27,10 @@ from .strategy import TrendStrategy, Position, SignalType
 from .indicators import Candle
 
 logger = logging.getLogger(__name__)
+
+
+def _get_env_or_default(key: str, default: str) -> str:
+    return os.getenv(key, default)
 
 
 class RobotState(Enum):
@@ -98,7 +103,6 @@ class TrendRobot:
         self.client: Optional[BitgetClient] = None
         self.strategy: Optional[TrendStrategy] = None
         self.candle_cache: Optional[CandleCache] = None
-        self.mtf_candle_cache: Optional[CandleCache] = None  # MTF confirmation timeframe
 
         self._balance = 0.0
         self._equity = 0.0
@@ -152,7 +156,6 @@ class TrendRobot:
             if self._symbol_info:
                 self.strategy.set_symbol_info(self._symbol_info)
             self.candle_cache = CandleCache()
-            self.mtf_candle_cache = CandleCache()  # MTF confirmation uchun alohida kesh
 
             logger.info(f"Initialized: {symbol}, balance=${self._balance:.2f}")
         except Exception as e:
@@ -211,8 +214,8 @@ class TrendRobot:
         except Exception:
             return
 
-        # 2. Candles
-        tf = self.config.mtf.PRIMARY_TIMEFRAME
+        # 2. Candles (timeframe strategy qayta yozilganda config ga qo'shiladi)
+        tf = _get_env_or_default("PRIMARY_TIMEFRAME", "5m")
         candles = await self.candle_cache.get_candles(self.client, symbol, tf, 200)
 
         # 3. Balans (har 5 tick)
@@ -275,18 +278,8 @@ class TrendRobot:
 
         # 7. Signal tekshirish (faqat pozitsiya yo'q bo'lganda)
         if not in_position and candles:
-            # MTF candles olish (confirmation timeframe)
-            mtf_candles = None
-            if self.config.mtf.ENABLED and self.mtf_candle_cache:
-                try:
-                    mtf_tf = self.config.mtf.CONFIRM_TIMEFRAME
-                    mtf_candles = await self.mtf_candle_cache.get_candles(
-                        self.client, symbol, mtf_tf, 200
-                    )
-                except Exception as e:
-                    logger.warning(f"MTF candles olishda xato: {e}")
-
-            signal = self.strategy.check_signal(candles, self._current_price, mtf_candles)
+            self.strategy.update_candles(candles)
+            signal = self.strategy.check_signal(candles, self._current_price)
 
             if signal != SignalType.NONE:
                 async with self._order_lock:
@@ -304,13 +297,13 @@ class TrendRobot:
             if pos is None:
                 continue
 
-            # Opposite signal exit
+            # Opposite signal exit (placeholder — har doim False)
             if self.strategy.check_opposite_signal_exit(pos):
                 logger.info(f"Opposite signal exit: {pos.side}")
                 close_side = "sell" if pos.side == "long" else "buy"
                 try:
                     await self.client.place_order(symbol, close_side, "close", pos.size, "market")
-                    self.strategy.reset_trailing(pos.side)
+                    self.strategy.on_trade_closed(pos.side)
                 except Exception as e:
                     logger.error(f"Opposite signal exit xatosi: {e}")
                 continue
@@ -331,13 +324,13 @@ class TrendRobot:
                         if ts_attempt < 1:
                             await asyncio.sleep(0.5)
 
-            # Trailing stop hit check
+            # Trailing stop hit check (placeholder — har doim False)
             if self.strategy.check_trailing_stop_hit(pos, self._current_price):
                 logger.info(f"Trailing stop hit: {pos.side} @ ${self._current_price:.2f}")
                 close_side = "sell" if pos.side == "long" else "buy"
                 try:
                     await self.client.place_order(symbol, close_side, "close", pos.size, "market")
-                    self.strategy.reset_trailing(pos.side)
+                    self.strategy.on_trade_closed(pos.side)
                 except Exception as e:
                     logger.error(f"Trailing stop close xatosi: {e}")
 
@@ -398,9 +391,6 @@ class TrendRobot:
             f"[{self.config.trading.SYMBOL}] "
             f"${self._current_price:.2f} | "
             f"Bal: ${self._balance:.2f} | "
-            f"EMA: {s.get('ema', {}).get('fast', 0):.2f}/{s.get('ema', {}).get('slow', 0):.2f} | "
-            f"ADX: {s.get('adx', {}).get('value', 0) if isinstance(s.get('adx'), dict) else s.get('adx', 0):.1f} | "
-            f"ATR: {s.get('atr', 0) if isinstance(s.get('atr'), (int, float)) else 0:.2f} | "
             f"Signal: {s.get('last_signal', 'NONE')} | "
             f"{h}h{m}m"
         )

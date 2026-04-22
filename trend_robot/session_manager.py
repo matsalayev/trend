@@ -23,8 +23,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Any
 
 from .config import (
-    RobotConfig, APIConfig, TradingConfig, GridConfig,
-    EMAConfig, IchimokuConfig, TrendConfig, MTFConfig, ExitConfig, RiskConfig,
+    RobotConfig, APIConfig, TradingConfig, ExitConfig, RiskConfig,
 )
 from .robot import TrendRobot, RobotState
 from .api_client import BitgetClient
@@ -77,30 +76,10 @@ class UserSession:
     leverage: int = 10
     margin_mode: str = "crossed"
     trade_amount: float = 0.0
+    tick_interval: float = 1.0
 
-    # EMA sozlamalari
-    ema_fast_period: int = 9
-    ema_slow_period: int = 21
-
-    # Ichimoku sozlamalari
-    ichimoku_enabled: bool = True
-
-    # Trend (ADX) sozlamalari
-    adx_period: int = 14
-    adx_threshold: float = 25.0
-
-    # MTF sozlamalari
-    mtf_enabled: bool = True
-
-    # Exit sozlamalari
-    use_trailing_stop: bool = True
-    trailing_activate_pct: float = 1.0
-    trailing_floor_pct: float = 0.3
-    use_opposite_signal_exit: bool = True
+    # Exit sozlamalari (skeleton)
     sl_percent: float = 3.0
-
-    # Grid sozlamalari (optional)
-    grid_enabled: bool = False
 
     # Risk
     max_loss_percent: float = 20.0
@@ -315,7 +294,7 @@ class TrendRobotWithWebhook(TrendRobot):
                     exit_price=self._current_price,
                     quantity=prev_pos.size,
                     pnl=pnl,
-                    reason="TRAILING_STOP" if self.config.exit.USE_TRAILING_STOP else "SIGNAL",
+                    reason="SIGNAL",
                 )
                 logger.info(f"trade_closed webhook: {side} pnl=${pnl:.4f}")
 
@@ -357,63 +336,11 @@ class TrendRobotWithWebhook(TrendRobot):
                     "opened_at": p.opened_at,
                 })
 
-            # All indicator data from strategy
+            # Skeleton — indikatorlar strategiya qayta yozilganda qo'shiladi
             status = self.strategy.get_status()
-            ema_raw = status.get("ema", {})
-            ichimoku_raw = status.get("ichimoku")  # None when disabled
-            adx_raw = status.get("adx", {})
             trailing_long = status.get("trailing_long", {})
             trailing_short = status.get("trailing_short", {})
 
-            # EMA signal: compare fast vs slow
-            fast_val = ema_raw.get("fast", 0)
-            slow_val = ema_raw.get("slow", 0)
-            if fast_val > 0 and slow_val > 0:
-                spread = fast_val - slow_val
-                ema_signal = "GOLDEN_CROSS" if spread > 0 else "DEATH_CROSS"
-            else:
-                ema_signal = "NEUTRAL"
-
-            ema = {
-                "fast": fast_val,
-                "slow": slow_val,
-                "spread": ema_raw.get("spread", 0),
-                "spreadPct": ema_raw.get("spread_pct", 0),
-                "signal": ema_signal,
-            }
-
-            # Ichimoku — None when disabled
-            ichimoku = None
-            if ichimoku_raw:
-                cloud_top = ichimoku_raw.get("cloud_top", 0)
-                cloud_bottom = ichimoku_raw.get("cloud_bottom", 0)
-                price_above = self._current_price > cloud_top if cloud_top > 0 else False
-                if cloud_top > 0:
-                    ichi_signal = "BULLISH" if price_above else "BEARISH"
-                else:
-                    ichi_signal = "NEUTRAL"
-                ichimoku = {
-                    "tenkan": ichimoku_raw.get("tenkan", 0),
-                    "kijun": ichimoku_raw.get("kijun", 0),
-                    "senkouA": ichimoku_raw.get("senkou_a", 0),
-                    "senkouB": ichimoku_raw.get("senkou_b", 0),
-                    "chikou": ichimoku_raw.get("chikou", 0),
-                    "cloudTop": cloud_top,
-                    "cloudBottom": cloud_bottom,
-                    "priceAboveCloud": price_above,
-                    "signal": ichi_signal,
-                }
-
-            # ADX
-            adx = {
-                "value": adx_raw.get("value", 0),
-                "plusDi": adx_raw.get("plus_di", 0),
-                "minusDi": adx_raw.get("minus_di", 0),
-                "trending": adx_raw.get("trending", False),
-                "threshold": self.config.trend.ADX_THRESHOLD,
-            }
-
-            # Trailing stop state
             trailing = {
                 "longPhase": trailing_long.get("phase", "INACTIVE"),
                 "longStopPrice": trailing_long.get("stop_price", 0),
@@ -421,7 +348,6 @@ class TrendRobotWithWebhook(TrendRobot):
                 "shortStopPrice": trailing_short.get("stop_price", 0),
             }
 
-            # Performance
             performance = {
                 "totalTrades": 0,
                 "winningTrades": 0,
@@ -433,20 +359,12 @@ class TrendRobotWithWebhook(TrendRobot):
                 "maxDrawdownPercent": 0,
             }
 
-            # Settings — trend-specific config
             settings = {
-                "emaFastPeriod": self.config.ema.FAST_PERIOD,
-                "emaSlowPeriod": self.config.ema.SLOW_PERIOD,
-                "adxPeriod": self.config.trend.ADX_PERIOD,
-                "adxThreshold": self.config.trend.ADX_THRESHOLD,
-                "trailingActivate": self.config.exit.TRAILING_ACTIVATE_PCT,
-                "trailingSL": self.config.exit.TRAILING_FLOOR_PCT,
                 "slPercent": self.config.exit.SL_PERCENT,
-                "ichimokuEnabled": self.config.ichimoku.ENABLED,
                 "leverage": self.config.trading.LEVERAGE,
-                "timeframe": self.config.mtf.PRIMARY_TIMEFRAME,
                 "baseLot": round(self.config.CAPITAL_ENGAGEMENT * 100, 1),
                 "feeRate": self._session.taker_fee_rate,
+                "tickInterval": self.config.TICK_INTERVAL,
             }
 
             # Runtime
@@ -461,7 +379,7 @@ class TrendRobotWithWebhook(TrendRobot):
                 "startedAt": started_at,
             }
 
-            # Assemble payload — HEMA destructures: ema, ichimoku, adx, trailing, etc.
+            # Assemble payload — skeleton (indikatorlar strategiya bilan qaytadi)
             payload = {
                 "symbol": self.config.trading.SYMBOL,
                 "currentPrice": self._current_price,
@@ -473,9 +391,6 @@ class TrendRobotWithWebhook(TrendRobot):
                 "performance": performance,
                 "settings": settings,
                 "runtime": runtime,
-                "ema": ema,
-                "ichimoku": ichimoku,
-                "adx": adx,
                 "trailing": trailing,
             }
 
@@ -614,21 +529,8 @@ class SessionManager:
             leverage=int(cs.get("leverage", s.get("leverage", 10))),
             margin_mode=str(cs.get("marginMode", s.get("marginMode", "crossed"))),
             trade_amount=float(cs.get("tradeAmount", s.get("tradeAmount", 0))),
-            # EMA
-            ema_fast_period=int(cs.get("emaFastPeriod", s.get("emaFastPeriod", 9))),
-            ema_slow_period=int(cs.get("emaSlowPeriod", s.get("emaSlowPeriod", 21))),
-            # Ichimoku
-            ichimoku_enabled=str(cs.get("ichimokuEnabled", s.get("ichimokuEnabled", "true"))).lower() in ("true", "1"),
-            # Trend (ADX)
-            adx_period=int(cs.get("adxPeriod", s.get("adxPeriod", 14))),
-            adx_threshold=float(cs.get("adxThreshold", s.get("adxThreshold", 25.0))),
-            # MTF
-            mtf_enabled=str(cs.get("mtfEnabled", s.get("mtfEnabled", "true"))).lower() in ("true", "1"),
-            # Exit
-            use_trailing_stop=str(cs.get("useTrailingStop", s.get("useTrailingStop", "true"))).lower() in ("true", "1"),
-            trailing_activate_pct=float(cs.get("trailingActivatePct", s.get("trailingActivatePct", 1.0))),
-            trailing_floor_pct=float(cs.get("trailingFloorPct", s.get("trailingFloorPct", 0.3))),
-            use_opposite_signal_exit=str(cs.get("useOppositeSignalExit", s.get("useOppositeSignalExit", "true"))).lower() in ("true", "1"),
+            tick_interval=float(cs.get("tickInterval", s.get("tickInterval", 1.0))),
+            # Exit (skeleton)
             sl_percent=float(cs.get("slPercent", s.get("slPercent", 3.0))),
             # Capital engagement
             capital_engagement=float(cs.get("capitalEngagement", s.get("capitalEngagement", 15))) / 100,
@@ -847,22 +749,19 @@ class SessionManager:
         return result
 
     async def get_settings(self, user_id: str) -> dict:
-        """Session sozlamalari"""
+        """Session sozlamalari — skeleton"""
         session = self._find_session(user_id)
         return {
-            "emaFastPeriod": session.ema_fast_period,
-            "emaSlowPeriod": session.ema_slow_period,
-            "ichimokuEnabled": session.ichimoku_enabled,
-            "adxPeriod": session.adx_period,
-            "adxThreshold": session.adx_threshold,
-            "mtfEnabled": session.mtf_enabled,
-            "useTrailingStop": session.use_trailing_stop,
-            "trailingActivatePct": session.trailing_activate_pct,
-            "useOppositeSignalExit": session.use_opposite_signal_exit,
+            "symbol": session.trading_pair,
+            "leverage": session.leverage,
+            "marginMode": session.margin_mode,
             "slPercent": session.sl_percent,
             "capitalEngagement": session.capital_engagement * 100,
             "maxLossPercent": session.max_loss_percent,
+            "maxDailyLossPercent": session.max_daily_loss_percent,
             "feeRate": session.taker_fee_rate * 100,
+            "tradeAmount": session.trade_amount,
+            "tickInterval": session.tick_interval,
         }
 
     async def update_settings(self, user_id: str, settings: dict):
@@ -881,36 +780,10 @@ class SessionManager:
             session.margin_mode = str(cs["marginMode"])
         if "tradeAmount" in cs:
             session.trade_amount = float(cs["tradeAmount"])
+        if "tickInterval" in cs:
+            session.tick_interval = float(cs["tickInterval"])
 
-        # ── EMA ──────────────────────────────────────────────────────────
-        if "emaFastPeriod" in cs:
-            session.ema_fast_period = int(cs["emaFastPeriod"])
-        if "emaSlowPeriod" in cs:
-            session.ema_slow_period = int(cs["emaSlowPeriod"])
-
-        # ── Ichimoku ─────────────────────────────────────────────────────
-        if "ichimokuEnabled" in cs:
-            session.ichimoku_enabled = str(cs["ichimokuEnabled"]).lower() in ("true", "1")
-
-        # ── Trend (ADX) ──────────────────────────────────────────────────
-        if "adxPeriod" in cs:
-            session.adx_period = int(cs["adxPeriod"])
-        if "adxThreshold" in cs:
-            session.adx_threshold = float(cs["adxThreshold"])
-
-        # ── MTF ──────────────────────────────────────────────────────────
-        if "mtfEnabled" in cs:
-            session.mtf_enabled = str(cs["mtfEnabled"]).lower() in ("true", "1")
-
-        # ── Exit / Trailing Stop ─────────────────────────────────────────
-        if "useTrailingStop" in cs:
-            session.use_trailing_stop = str(cs["useTrailingStop"]).lower() in ("true", "1")
-        if "trailingActivatePct" in cs:
-            session.trailing_activate_pct = float(cs["trailingActivatePct"])
-        if "trailingFloorPct" in cs:
-            session.trailing_floor_pct = float(cs["trailingFloorPct"])
-        if "useOppositeSignalExit" in cs:
-            session.use_opposite_signal_exit = str(cs["useOppositeSignalExit"]).lower() in ("true", "1")
+        # ── Exit (skeleton) ──────────────────────────────────────────────
         if "slPercent" in cs:
             session.sl_percent = float(cs["slPercent"])
 
@@ -1048,7 +921,7 @@ class SessionManager:
         raise ValueError(f"Session topilmadi: {user_id}")
 
     def _create_robot_config(self, session: UserSession) -> RobotConfig:
-        """Session dan RobotConfig yaratish"""
+        """Session dan RobotConfig yaratish — skeleton (strategy-specific olib tashlandi)"""
         return RobotConfig(
             api=APIConfig(
                 API_KEY=session.api_key,
@@ -1061,29 +934,8 @@ class SessionManager:
                 LEVERAGE=session.leverage,
                 MARGIN_MODE=session.margin_mode,
             ),
-            ema=EMAConfig(
-                FAST_PERIOD=session.ema_fast_period,
-                SLOW_PERIOD=session.ema_slow_period,
-            ),
-            ichimoku=IchimokuConfig(
-                ENABLED=session.ichimoku_enabled,
-            ),
-            trend=TrendConfig(
-                ADX_PERIOD=session.adx_period,
-                ADX_THRESHOLD=session.adx_threshold,
-            ),
-            mtf=MTFConfig(
-                ENABLED=session.mtf_enabled,
-            ),
             exit=ExitConfig(
-                USE_TRAILING_STOP=session.use_trailing_stop,
-                TRAILING_ACTIVATE_PCT=session.trailing_activate_pct,
-                TRAILING_FLOOR_PCT=session.trailing_floor_pct,
-                USE_OPPOSITE_SIGNAL_EXIT=session.use_opposite_signal_exit,
                 SL_PERCENT=session.sl_percent,
-            ),
-            grid=GridConfig(
-                ENABLED=session.grid_enabled,
             ),
             risk=RiskConfig(
                 MAX_LOSS_PERCENT=session.max_loss_percent,
@@ -1091,6 +943,7 @@ class SessionManager:
                 TAKER_FEE_RATE=session.taker_fee_rate,
                 MAKER_FEE_RATE=session.maker_fee_rate,
             ),
+            TICK_INTERVAL=session.tick_interval,
             CAPITAL_ENGAGEMENT=session.capital_engagement,
         )
 

@@ -1,11 +1,10 @@
-"""Trend Robot - Shared Test Fixtures"""
+"""Trend Robot - Shared Test Fixtures (Skeleton)"""
 
 import pytest
 from unittest.mock import AsyncMock
 
 from trend_robot.config import (
-    APIConfig, TradingConfig, EMAConfig, IchimokuConfig, TrendConfig,
-    MTFConfig, ExitConfig, GridConfig, RiskConfig, RobotConfig
+    APIConfig, TradingConfig, ExitConfig, RiskConfig, RobotConfig,
 )
 
 
@@ -14,12 +13,7 @@ def default_robot_config():
     return RobotConfig(
         api=APIConfig(DEMO_MODE=True, API_KEY="test", SECRET_KEY="test", PASSPHRASE="test"),
         trading=TradingConfig(SYMBOL="BTCUSDT", LEVERAGE=10),
-        ema=EMAConfig(FAST_PERIOD=9, SLOW_PERIOD=21),
-        ichimoku=IchimokuConfig(ENABLED=True, TENKAN_PERIOD=9, KIJUN_PERIOD=26),
-        trend=TrendConfig(ADX_PERIOD=14, ADX_THRESHOLD=25),
-        mtf=MTFConfig(ENABLED=False),
-        exit=ExitConfig(USE_TRAILING_STOP=True, TRAILING_ACTIVATE_PCT=1.0, TRAILING_FLOOR_PCT=0.3, SL_PERCENT=3.0),
-        grid=GridConfig(ENABLED=False),
+        exit=ExitConfig(SL_PERCENT=3.0),
         risk=RiskConfig(MAX_LOSS_PERCENT=20, TAKER_FEE_RATE=0.001),
         CAPITAL_ENGAGEMENT=0.15,
     )
