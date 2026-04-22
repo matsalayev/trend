@@ -150,9 +150,8 @@ class TrendRobotWithWebhook(TrendRobot):
         self._persistence = session.state_persistence
         self._session_trade_amount = session.trade_amount
         self._status_update_counter = 0
-        # Oldingi tick dagi pozitsiyalar — trade_closed detection uchun
-        self._prev_long: Optional[Any] = None
-        self._prev_short: Optional[Any] = None
+        # Oldingi tick dagi pozitsiya — trade_closed detection uchun (v2.0: singular)
+        self._prev_position: Optional[Any] = None
 
     async def initialize(self):
         """Initialize + position reconciliation"""
@@ -179,53 +178,21 @@ class TrendRobotWithWebhook(TrendRobot):
             except Exception as e:
                 logger.warning(f"positions_synced yuborishda xato: {e}")
 
-    async def _open_position(self, signal):
-        """Pozitsiya ochish + trade_opened webhook"""
-        symbol = self.config.trading.SYMBOL
+    async def _open_position(self, signal, size: float):
+        """v2.0: delegate to TrendRobot._open_position, then emit trade_opened webhook."""
         from .strategy import SignalType
-        side = "buy" if signal == SignalType.LONG else "sell"
-        # Allocated balance cheklovi
-        effective_balance = self._balance
-        if hasattr(self, '_session_trade_amount') and self._session_trade_amount > 0:
-            effective_balance = min(self._balance, self._session_trade_amount)
-        size = self.strategy.calculate_position_size(self._current_price, effective_balance)
+        # Parent handles: margin check, exchange order, strategy.create_position, SL
+        await super()._open_position(signal, size)
 
-        if size <= 0:
-            logger.warning("Pozitsiya hajmi 0 — order qo'yilmaydi")
-            return
+        pos = self.strategy.position if self.strategy else None
+        if pos is None:
+            return  # parent skipped (margin/API error)
+
+        side = "buy" if signal == SignalType.LONG else "sell"
+        symbol = self.config.trading.SYMBOL
+        order_id = pos.id
 
         try:
-            logger.info(f"OPENING {signal.value}: {side} {size:.6f} @ ${self._current_price:.2f}")
-            result = await self.client.place_order(symbol, side, "open", size, "market")
-            order_id = ""
-            if isinstance(result, dict):
-                order_id = str(result.get("orderId", result.get("data", {}).get("orderId", "")))
-            if not order_id:
-                order_id = f"trend-{int(time.time() * 1000)}"
-
-            # Darhol pozitsiyani belgilash — duplikat order oldini olish
-            pos_side = "long" if signal == SignalType.LONG else "short"
-            from .strategy import Position
-            new_pos = Position(
-                id=order_id, side=pos_side,
-                entry_price=self._current_price, size=size,
-            )
-            if pos_side == "long":
-                self.strategy.long_position = new_pos
-            else:
-                self.strategy.short_position = new_pos
-
-            # SL qo'yish
-            sl_price = self.strategy.calculate_sl_price(self._current_price, pos_side)
-
-            if sl_price > 0:
-                await self.client.modify_tpsl(
-                    symbol=symbol,
-                    side=pos_side,
-                    sl_price=sl_price,
-                )
-                logger.info(f"SL qo'yildi: ${sl_price:.2f}")
-
             # Webhook — trade_opened
             if self._webhook:
                 try:
@@ -233,7 +200,7 @@ class TrendRobotWithWebhook(TrendRobot):
                         user_bot_id=self._session.user_bot_id,
                         symbol=symbol,
                         side=side,
-                        price=self._current_price,
+                        price=self.current_price,
                         quantity=size,
                         order_id=order_id,
                         leverage=self.config.trading.LEVERAGE,
@@ -248,7 +215,7 @@ class TrendRobotWithWebhook(TrendRobot):
                     self._persistence.save_position({
                         "order_id": order_id,
                         "side": side,
-                        "price": self._current_price,
+                        "price": self.current_price,
                         "size": size,
                         "opened_at": datetime.now(timezone.utc).isoformat(),
                     })
@@ -258,26 +225,51 @@ class TrendRobotWithWebhook(TrendRobot):
         except Exception as e:
             logger.error(f"Order xatosi: {e}")
 
+    async def _close_position(self, pos, exit_price: float, reason: str) -> None:
+        """v2.0: delegate to parent close, then emit trade_closed webhook."""
+        # Snapshot before parent nulls out strategy.position
+        entry = getattr(pos, "entry_price", 0) or 0
+        size = getattr(pos, "size", 0) or 0
+        side = getattr(pos, "side", "long")
+
+        await super()._close_position(pos, exit_price, reason)
+
+        if self._webhook and entry > 0 and size > 0 and self.state == RobotState.RUNNING:
+            try:
+                pnl = (exit_price - entry) * size if side == "long" else (entry - exit_price) * size
+                await self._webhook.send_trade_closed(
+                    user_bot_id=self._session.user_bot_id,
+                    symbol=self.config.trading.SYMBOL,
+                    side=side,
+                    entry_price=entry,
+                    exit_price=exit_price,
+                    quantity=size,
+                    pnl=pnl,
+                    reason=reason,
+                )
+                logger.info(f"trade_closed webhook: {side} pnl=${pnl:.4f} reason={reason}")
+            except Exception as e:
+                logger.warning(f"trade_closed webhook xatosi: {e}")
+
+        if self._persistence:
+            try:
+                self._persistence.clear_positions()
+            except Exception:
+                pass
+
     async def _tick(self):
-        """Tick + trade_closed detection + webhook status updates"""
-        # Oldingi pozitsiyalarni saqlash (trade_closed detection uchun)
-        prev_long = self._prev_long
-        prev_short = self._prev_short
+        """Tick + trade_closed detection + webhook status updates (v2.0: singular position)."""
+        prev_pos = self._prev_position
 
         await super()._tick()
 
-        # Hozirgi pozitsiyalar
-        cur_long = self.strategy.long_position if self.strategy else None
-        cur_short = self.strategy.short_position if self.strategy else None
+        cur_pos = self.strategy.position if self.strategy else None
 
-        # Trade closed detection — pozitsiya yo'qolgan bo'lsa
-        if self._webhook:
-            await self._detect_closed_position(prev_long, cur_long, "long")
-            await self._detect_closed_position(prev_short, cur_short, "short")
+        # Trade closed detection — pozitsiya yo'qolgan bo'lsa (SL/trailing exit via strategy)
+        if self._webhook and prev_pos is not None and cur_pos is None:
+            await self._detect_closed_position(prev_pos, cur_pos, getattr(prev_pos, "side", "long"))
 
-        # Hozirgi pozitsiyalarni keyingi tick uchun saqlash
-        self._prev_long = cur_long
-        self._prev_short = cur_short
+        self._prev_position = cur_pos
 
         # Status update har 5 tick da
         self._status_update_counter += 1
@@ -305,16 +297,16 @@ class TrendRobotWithWebhook(TrendRobot):
             # Pozitsiya yopilgan
             try:
                 if side == "long":
-                    pnl = (self._current_price - prev_pos.entry_price) * prev_pos.size
+                    pnl = (self.current_price - prev_pos.entry_price) * prev_pos.size
                 else:
-                    pnl = (prev_pos.entry_price - self._current_price) * prev_pos.size
+                    pnl = (prev_pos.entry_price - self.current_price) * prev_pos.size
 
                 await self._webhook.send_trade_closed(
                     user_bot_id=self._session.user_bot_id,
                     symbol=self.config.trading.SYMBOL,
                     side=side,
                     entry_price=prev_pos.entry_price,
-                    exit_price=self._current_price,
+                    exit_price=self.current_price,
                     quantity=prev_pos.size,
                     pnl=pnl,
                     reason="SIGNAL",
@@ -337,47 +329,44 @@ class TrendRobotWithWebhook(TrendRobot):
             return
 
         try:
-            # Positions
+            # Positions (v2.0: singular self.strategy.position)
             buy_positions = []
             sell_positions = []
 
-            if self.strategy.long_position:
-                p = self.strategy.long_position
-                buy_positions.append({
-                    "price": p.entry_price,
-                    "lot": p.size,
-                    "order_id": p.id,
-                    "opened_at": p.opened_at,
-                })
+            pos = self.strategy.position
+            if pos:
+                entry = {
+                    "price": pos.entry_price,
+                    "lot": pos.size,
+                    "order_id": pos.id,
+                    "opened_at": pos.opened_at,
+                }
+                if pos.side == "long":
+                    buy_positions.append(entry)
+                else:
+                    sell_positions.append(entry)
 
-            if self.strategy.short_position:
-                p = self.strategy.short_position
-                sell_positions.append({
-                    "price": p.entry_price,
-                    "lot": p.size,
-                    "order_id": p.id,
-                    "opened_at": p.opened_at,
-                })
-
-            # Skeleton — indikatorlar strategiya qayta yozilganda qo'shiladi
-            status = self.strategy.get_status()
-            trailing_long = status.get("trailing_long", {})
-            trailing_short = status.get("trailing_short", {})
-
+            # Trailing state (v2.0: single phase on position)
+            phase = pos.trailing_phase.value.upper() if pos else "INACTIVE"
+            stop_price = pos.stop_price if pos else 0
             trailing = {
-                "longPhase": trailing_long.get("phase", "INACTIVE"),
-                "longStopPrice": trailing_long.get("stop_price", 0),
-                "shortPhase": trailing_short.get("phase", "INACTIVE"),
-                "shortStopPrice": trailing_short.get("stop_price", 0),
+                "longPhase": phase if pos and pos.side == "long" else "INACTIVE",
+                "longStopPrice": stop_price if pos and pos.side == "long" else 0,
+                "shortPhase": phase if pos and pos.side == "short" else "INACTIVE",
+                "shortStopPrice": stop_price if pos and pos.side == "short" else 0,
             }
 
+            unrealized = pos.pnl_at(self.current_price) if pos else 0.0
+            equity = self.balance + unrealized
+            initial_balance = getattr(self, "initial_balance", self.balance)
+
             performance = {
-                "totalTrades": 0,
-                "winningTrades": 0,
-                "winRate": 0,
-                "profit": round(self._equity - self._initial_balance, 4),
-                "unrealizedPnl": round(self._equity - self._balance, 4),
-                "peakBalance": self._balance,
+                "totalTrades": getattr(self.strategy, "total_trades", 0),
+                "winningTrades": getattr(self.strategy, "winning_trades", 0),
+                "winRate": round(self.strategy.winrate(), 2) if hasattr(self.strategy, "winrate") else 0,
+                "profit": round(equity - initial_balance, 4),
+                "unrealizedPnl": round(unrealized, 4),
+                "peakBalance": round(self.balance, 4),
                 "maxDrawdown": 0,
                 "maxDrawdownPercent": 0,
             }
@@ -391,22 +380,20 @@ class TrendRobotWithWebhook(TrendRobot):
             }
 
             # Runtime
-            uptime = int(time.time() - self._start_time) if self._start_time else 0
-            started_at = (
-                datetime.fromtimestamp(self._start_time, tz=timezone.utc).isoformat()
-                if self._start_time else ""
-            )
+            start_ts = self.start_time.timestamp() if self.start_time else 0
+            uptime = int(time.time() - start_ts) if start_ts else 0
+            started_at = self.start_time.isoformat() if self.start_time else ""
             runtime = {
-                "tick": self._tick_count,
+                "tick": self.tick_count,
                 "uptime": uptime,
                 "startedAt": started_at,
             }
 
-            # Assemble payload — skeleton (indikatorlar strategiya bilan qaytadi)
+            # Assemble payload
             payload = {
                 "symbol": self.config.trading.SYMBOL,
-                "currentPrice": self._current_price,
-                "balance": self._balance,
+                "currentPrice": self.current_price,
+                "balance": self.balance,
                 "positions": {
                     "buy": buy_positions,
                     "sell": sell_positions,
@@ -447,13 +434,14 @@ class TrendRobotWithWebhook(TrendRobot):
             except Exception as e:
                 logger.error(f"Pozitsiya yopishda xato: {e}")
 
-        # Webhook — status_changed
+        # Webhook — status_changed (reflect actual state: error vs user_requested)
         if self._webhook:
             try:
+                is_error = self.state == RobotState.ERROR
                 await self._webhook.send_status_changed(
                     user_bot_id=self._session.user_bot_id,
-                    status="stopped",
-                    message="user_requested",
+                    status="error" if is_error else "stopped",
+                    message="runtime_error" if is_error else "user_requested",
                 )
             except Exception:
                 pass
