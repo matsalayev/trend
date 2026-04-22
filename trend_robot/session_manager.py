@@ -334,17 +334,29 @@ class TrendRobotWithWebhook(TrendRobot):
             sell_positions = []
 
             pos = self.strategy.position
+            buy_pnl = 0.0
+            sell_pnl = 0.0
             if pos:
+                pnl = pos.pnl_at(self.current_price)
                 entry = {
                     "price": pos.entry_price,
                     "lot": pos.size,
-                    "order_id": pos.id,
-                    "opened_at": pos.opened_at,
+                    "orderId": pos.id,
+                    "openedAt": pos.opened_at,
+                    "pnl": pnl,
+                    "pnlPercent": ((self.current_price - pos.entry_price) / pos.entry_price * 100)
+                                  if pos.side == "long"
+                                  else ((pos.entry_price - self.current_price) / pos.entry_price * 100),
+                    "leverage": self.config.trading.LEVERAGE,
+                    "markPrice": self.current_price,
+                    "marginMode": self.config.trading.MARGIN_MODE,
                 }
                 if pos.side == "long":
                     buy_positions.append(entry)
+                    buy_pnl = pnl
                 else:
                     sell_positions.append(entry)
+                    sell_pnl = pnl
 
             # Trailing state (v2.0: single phase on position)
             phase = pos.trailing_phase.value.upper() if pos else "INACTIVE"
@@ -365,7 +377,7 @@ class TrendRobotWithWebhook(TrendRobot):
                 "winningTrades": getattr(self.strategy, "winning_trades", 0),
                 "winRate": round(self.strategy.winrate(), 2) if hasattr(self.strategy, "winrate") else 0,
                 "profit": round(equity - initial_balance, 4),
-                "unrealizedPnl": round(unrealized, 4),
+                "unrealizedPnL": round(unrealized, 4),
                 "peakBalance": round(self.balance, 4),
                 "maxDrawdown": 0,
                 "maxDrawdownPercent": 0,
@@ -397,6 +409,11 @@ class TrendRobotWithWebhook(TrendRobot):
                 "positions": {
                     "buy": buy_positions,
                     "sell": sell_positions,
+                    "buyCount": len(buy_positions),
+                    "sellCount": len(sell_positions),
+                    "buyPnl": buy_pnl,
+                    "sellPnl": sell_pnl,
+                    "totalPnl": buy_pnl + sell_pnl,
                 },
                 "performance": performance,
                 "settings": settings,
