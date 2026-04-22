@@ -234,7 +234,8 @@ class TrendRobotWithWebhook(TrendRobot):
 
         await super()._close_position(pos, exit_price, reason)
 
-        if self._webhook and entry > 0 and size > 0 and self.state == RobotState.RUNNING:
+        # Allow webhook during RUNNING + STOPPING (graceful shutdown with position)
+        if self._webhook and entry > 0 and size > 0 and self.state in (RobotState.RUNNING, RobotState.STOPPING):
             try:
                 pnl = (exit_price - entry) * size if side == "long" else (entry - exit_price) * size
                 await self._webhook.send_trade_closed(
@@ -442,14 +443,10 @@ class TrendRobotWithWebhook(TrendRobot):
         """
         logger.info("TrendRobotWithWebhook stopping...")
 
-        # Pozitsiyalarni yopish (webhook yubormasdan)
-        if self.client:
-            try:
-                symbol = self.config.trading.SYMBOL
-                await self.client.close_all_positions(symbol)
-                logger.info("Barcha pozitsiyalar yopildi")
-            except Exception as e:
-                logger.error(f"Pozitsiya yopishda xato: {e}")
+        # NOTE: Parent TrendRobot.stop() calls _close_position(strategy.position, current_price, "MANUAL_STOP")
+        # which routes through our _close_position override → fires trade_closed webhook with proper PnL.
+        # Previously we called client.close_all_positions() directly here, which bypassed the webhook
+        # and left HEMA to infer closure via positions_synced (with wrong $0 PnL).
 
         # Webhook — status_changed (reflect actual state: error vs user_requested)
         if self._webhook:
