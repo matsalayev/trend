@@ -258,9 +258,54 @@ class TrendRobotWithWebhook(TrendRobot):
             except Exception:
                 pass
 
+    async def _check_allocated_loss_limit(self) -> bool:
+        """Agar ochiq pozitsiya unrealized zarari >= allocated amount bo'lsa:
+        pozitsiyani yopish + trade_closed webhook + botni ERROR holatiga o'tkazish."""
+        trade_amount = getattr(self, "_session_trade_amount", 0) or 0
+        if trade_amount <= 0 or not self.strategy or not self.strategy.position:
+            return False
+        pos = self.strategy.position
+        unrealized = pos.pnl_at(self.current_price)
+        if unrealized >= 0:
+            return False
+        loss = -unrealized
+        if loss < trade_amount:
+            return False
+
+        logger.warning(
+            f"[ALLOCATED LOSS STOP] loss=${loss:.2f} >= allocated=${trade_amount:.2f} — "
+            f"closing {pos.side} + stopping bot"
+        )
+        try:
+            await self._close_position(pos, self.current_price, "ALLOCATED_LOSS")
+        except Exception as e:
+            logger.error(f"Allocated loss close xato: {e}")
+
+        if self._webhook:
+            try:
+                await self._webhook.send_status_changed(
+                    user_bot_id=self._session.user_bot_id,
+                    status="error",
+                    message=f"allocated_loss_hit: -${loss:.2f} >= ${trade_amount:.2f}",
+                )
+            except Exception:
+                pass
+
+        # Stop tick loop
+        try:
+            self.state = RobotState.ERROR
+            self._running = False
+        except Exception:
+            pass
+        return True
+
     async def _tick(self):
         """Tick + trade_closed detection + webhook status updates (v2.0: singular position)."""
         prev_pos = self._prev_position
+
+        # Allocated loss limit tekshirish (birinchi, yangi entry oldini olish uchun)
+        if await self._check_allocated_loss_limit():
+            return
 
         await super()._tick()
 
