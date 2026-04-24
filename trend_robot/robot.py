@@ -380,22 +380,37 @@ class TrendRobot:
             self.strategy.set_cooldown(self.tick_count)
             return
 
-        # 4. Trend exhaustion exit (protects against stuck positions).
+        # 4. Time-based exits (protects against stuck positions).
         #
         # Production issue observed 2026-04-23: AVAXUSDT SHORT opened at $9.196
         # sat open for 14+ hours as ADX decayed from 28 -> 22 and price drifted
         # against entry, never triggering SL (3%) or trailing (needs +1% first).
-        # Unrealized PnL reached -$155 before force-close.
+        # Unrealized PnL reached -$155 before manual intervention.
         #
-        # Rule: if position has been open > MAX_HOLD_HOURS *and* trend strength
-        # (ADX) has decayed to < (threshold - EXHAUSTION_MARGIN), exit at market.
-        # A healthy trend should either print profit quickly or maintain ADX.
-        MAX_HOLD_HOURS = 12
-        EXHAUSTION_MARGIN = 3.0  # ADX must drop 3 below entry threshold
+        # Two rules, soft first then hard:
+        #   (a) TREND_EXHAUSTION: position open > 12h AND ADX has decayed
+        #       3 points below the entry threshold. Normal exit.
+        #   (b) MAX_AGE: hard safety cap at 24h regardless of ADX. A
+        #       healthy trend that's going to pay off should have done
+        #       so by then; anything still open is just bleeding funding.
+        SOFT_HOLD_HOURS = 12
+        HARD_MAX_HOURS = 24
+        EXHAUSTION_MARGIN = 3.0
         opened_age_hours = (time.time() - (pos.opened_ts or time.time())) / 3600
         adx_now = self.strategy.adx.value if self.strategy.adx.initialized else 100
+
+        if opened_age_hours > HARD_MAX_HOURS:
+            logger.warning(
+                f"[MAX_AGE] Force-closing {pos.side.upper()} after "
+                f"{opened_age_hours:.1f}h — hard 24h safety cap reached "
+                f"(ADX={adx_now:.1f})"
+            )
+            await self._close_position(pos, self.current_price, "MAX_AGE")
+            self.strategy.set_cooldown(self.tick_count)
+            return
+
         if (
-            opened_age_hours > MAX_HOLD_HOURS
+            opened_age_hours > SOFT_HOLD_HOURS
             and adx_now < (self.strategy.cfg.adx_threshold - EXHAUSTION_MARGIN)
         ):
             logger.info(
