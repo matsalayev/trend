@@ -378,6 +378,33 @@ class TrendRobot:
             reason = "SL" if pos.trailing_phase == TrailingPhase.NONE else "TRAIL_STOP"
             await self._close_position(pos, stop_hit, reason)
             self.strategy.set_cooldown(self.tick_count)
+            return
+
+        # 4. Trend exhaustion exit (protects against stuck positions).
+        #
+        # Production issue observed 2026-04-23: AVAXUSDT SHORT opened at $9.196
+        # sat open for 14+ hours as ADX decayed from 28 -> 22 and price drifted
+        # against entry, never triggering SL (3%) or trailing (needs +1% first).
+        # Unrealized PnL reached -$155 before force-close.
+        #
+        # Rule: if position has been open > MAX_HOLD_HOURS *and* trend strength
+        # (ADX) has decayed to < (threshold - EXHAUSTION_MARGIN), exit at market.
+        # A healthy trend should either print profit quickly or maintain ADX.
+        MAX_HOLD_HOURS = 12
+        EXHAUSTION_MARGIN = 3.0  # ADX must drop 3 below entry threshold
+        opened_age_hours = (time.time() - (pos.opened_ts or time.time())) / 3600
+        adx_now = self.strategy.adx.value if self.strategy.adx.initialized else 100
+        if (
+            opened_age_hours > MAX_HOLD_HOURS
+            and adx_now < (self.strategy.cfg.adx_threshold - EXHAUSTION_MARGIN)
+        ):
+            logger.info(
+                f"[TREND_EXHAUSTION] Force-closing {pos.side.upper()} after "
+                f"{opened_age_hours:.1f}h — ADX={adx_now:.1f} "
+                f"< threshold-{EXHAUSTION_MARGIN} ({self.strategy.cfg.adx_threshold - EXHAUSTION_MARGIN})"
+            )
+            await self._close_position(pos, self.current_price, "TREND_EXHAUSTION")
+            self.strategy.set_cooldown(self.tick_count)
 
     # ─── ENTRY ───────────────────────────────────────────────────────────────
 
