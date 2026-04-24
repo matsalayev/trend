@@ -78,6 +78,12 @@ class WebhookClient:
         self._user_id: Optional[str] = getattr(config, 'user_id', None)
         self._dropped_events: int = 0
         self._stopped = False
+        # Dead-letter queue on disk for priority events that exhausted retries.
+        # Replayed on startup so trade_opened/trade_closed survive proxy outages.
+        self._dlq_path = os.environ.get(
+            "WEBHOOK_DLQ_PATH", "/tmp/trend_webhook_dlq.jsonl"
+        )
+        self._replay_task: Optional[asyncio.Task] = None
 
     async def __aenter__(self) -> "WebhookClient":
         """Async context manager entry"""
@@ -127,6 +133,8 @@ class WebhookClient:
             timeout=aiohttp.ClientTimeout(total=self.config.timeout)
         )
         self._worker_task = asyncio.create_task(self._process_queue())
+        # Kick off DLQ replay loop in parallel — won't block startup.
+        self._replay_task = asyncio.create_task(self._replay_dlq_loop())
         logger.info(f"Webhook client started: {self.config.url}")
 
     async def stop(self):
@@ -141,11 +149,133 @@ class WebhookClient:
                 pass
             self._worker_task = None
 
+        if self._replay_task:
+            self._replay_task.cancel()
+            try:
+                await self._replay_task
+            except asyncio.CancelledError:
+                pass
+            self._replay_task = None
+
         if self._session:
             await self._session.close()
             self._session = None
 
         logger.info("Webhook client stopped")
+
+    # ─── Dead-letter queue (disk-backed) ────────────────────────────────────
+    #
+    # When a PRIORITY event (trade_opened / trade_closed / etc.) exhausts its
+    # retry budget, we append the full payload to a JSONL file. A background
+    # task re-reads the file every 60s and retries each line; successful
+    # entries are removed from the file. This survives restarts and long
+    # HEMA proxy outages (observed 502 Bad Gateway bursts during deploys).
+
+    def _persist_to_dlq(self, event: Dict[str, Any]) -> None:
+        """Append a failed priority event to the on-disk dead-letter queue."""
+        try:
+            record = {
+                "event": event,
+                "first_failed_at": int(time.time()),
+            }
+            with open(self._dlq_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+            logger.warning(
+                f"[WEBHOOK_DLQ] Persisted {event['event']} to disk "
+                f"— will retry from background task"
+            )
+        except Exception as e:
+            logger.error(f"[WEBHOOK_DLQ] Failed to persist event: {e}")
+
+    async def _replay_dlq_loop(self) -> None:
+        """Background loop that retries DLQ entries every 60s."""
+        await asyncio.sleep(10)  # Let startup settle
+        while not self._stopped:
+            try:
+                await self._replay_dlq_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[WEBHOOK_DLQ] Replay error: {e}")
+            await asyncio.sleep(60)
+
+    async def _replay_dlq_once(self) -> None:
+        """Read DLQ file, retry each entry, rewrite file with surviving ones."""
+        if not os.path.exists(self._dlq_path):
+            return
+        try:
+            with open(self._dlq_path, "r", encoding="utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            logger.error(f"[WEBHOOK_DLQ] Read failed: {e}")
+            return
+
+        if not lines:
+            return
+
+        logger.info(f"[WEBHOOK_DLQ] Replaying {len(lines)} persisted event(s)")
+        survivors = []
+        for line in lines:
+            try:
+                record = json.loads(line)
+                event = record.get("event")
+                first_failed_at = record.get("first_failed_at", 0)
+                # Give up after 24h to prevent runaway growth.
+                if time.time() - first_failed_at > 86400:
+                    logger.warning(
+                        f"[WEBHOOK_DLQ] Dropping stale event "
+                        f"(age={time.time() - first_failed_at:.0f}s): {event.get('event')}"
+                    )
+                    continue
+                # Inline retry WITHOUT re-persisting on failure (to avoid loops)
+                ok = await self._send_once_no_persist(event)
+                if not ok:
+                    survivors.append(line)
+            except Exception as e:
+                logger.error(f"[WEBHOOK_DLQ] Replay entry failed: {e}")
+                survivors.append(line)
+
+        try:
+            if survivors:
+                with open(self._dlq_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(survivors) + "\n")
+            else:
+                os.remove(self._dlq_path)
+        except Exception as e:
+            logger.error(f"[WEBHOOK_DLQ] File rewrite failed: {e}")
+
+    async def _send_once_no_persist(self, event: Dict[str, Any]) -> bool:
+        """Single-attempt send used by DLQ replay (no retry, no re-persist)."""
+        if not self._session or self._session.closed:
+            return False
+        payload = json.dumps(event)
+        timestamp = str(int(time.time() * 1000))
+        signature = self._generate_signature(timestamp, payload)
+        webhook_id = f"dlq-{event['data'].get('userBotId', '')}-{timestamp}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Webhook-Secret": self.config.secret,
+            "X-Webhook-ID": webhook_id,
+            "X-Webhook-Timestamp": timestamp,
+            "X-Webhook-Signature": signature,
+        }
+        try:
+            async with self._session.post(
+                self.config.url, data=payload, headers=headers
+            ) as response:
+                if response.status in (200, 201, 202):
+                    logger.info(
+                        f"[WEBHOOK_DLQ] Replayed {event.get('event')} OK"
+                    )
+                    return True
+                logger.debug(
+                    f"[WEBHOOK_DLQ] Replay {event.get('event')} "
+                    f"status={response.status}"
+                )
+                return False
+        except Exception as e:
+            logger.debug(f"[WEBHOOK_DLQ] Replay network error: {e}")
+            return False
 
     def _generate_signature(self, timestamp: str, payload: str) -> str:
         """HMAC-SHA256 signature yaratish (HEMA formati)"""
@@ -851,13 +981,18 @@ class WebhookClient:
         event_type = event['event']
         is_important = event_type in self.PRIORITY_EVENTS
 
+        # Priority events get 7 attempts with exponential backoff (~1+2+4+8+16+32 = 63s).
+        # Non-priority keep the original 3 attempts so status_update doesn't
+        # hammer the proxy during an outage.
+        max_retries = 7 if is_important else self.config.max_retries
+
         # Muhim eventlar INFO, status_update DEBUG
         if is_important:
             logger.info(f"[WEBHOOK] Sending {event_type} to {self.config.url}")
         else:
             logger.debug(f"[WEBHOOK] Sending {event_type}")
 
-        for attempt in range(self.config.max_retries):
+        for attempt in range(max_retries):
             try:
                 async with self._session.post(
                     self.config.url,
@@ -872,17 +1007,23 @@ class WebhookClient:
                         return True
                     else:
                         logger.warning(
-                            f"[WEBHOOK] {event_type} FAILED (attempt {attempt + 1}): "
+                            f"[WEBHOOK] {event_type} FAILED (attempt {attempt + 1}/{max_retries}): "
                             f"status={response.status}, body={response_text[:200]}"
                         )
 
             except asyncio.TimeoutError:
-                logger.warning(f"[WEBHOOK] {event_type} TIMEOUT (attempt {attempt + 1})")
+                logger.warning(f"[WEBHOOK] {event_type} TIMEOUT (attempt {attempt + 1}/{max_retries})")
             except aiohttp.ClientError as e:
-                logger.warning(f"[WEBHOOK] {event_type} CONNECTION ERROR (attempt {attempt + 1}): {e}")
+                logger.warning(f"[WEBHOOK] {event_type} CONNECTION ERROR (attempt {attempt + 1}/{max_retries}): {e}")
 
-            if attempt < self.config.max_retries - 1:
-                await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+            if attempt < max_retries - 1:
+                # Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s (capped)
+                delay = min(self.config.retry_delay * (2 ** attempt), 32.0)
+                await asyncio.sleep(delay)
 
-        logger.error(f"[WEBHOOK] {event_type} failed after {self.config.max_retries} attempts")
+        logger.error(f"[WEBHOOK] {event_type} failed after {max_retries} attempts")
+        # Persist priority events to the dead-letter queue — don't lose
+        # trade_opened / trade_closed to proxy outages.
+        if is_important:
+            self._persist_to_dlq(event)
         return False
