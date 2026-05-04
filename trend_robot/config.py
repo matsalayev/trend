@@ -365,10 +365,8 @@ SUPPORTED_PAIRS: List[str] = [
     "BTCUSDT",
     "ETHUSDT",
     "SOLUSDT",
-    "BNBUSDT",
     "XRPUSDT",
     "AVAXUSDT",
-    "ADAUSDT",
     "DOGEUSDT",
     "LINKUSDT",
 ]

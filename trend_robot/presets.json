@@ -2,7 +2,7 @@
   "BTCUSDT": {
     "symbol": "BTCUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
         "net": -60.98,
         "wr": 33.3,
@@ -53,7 +53,7 @@
   "ETHUSDT": {
     "symbol": "ETHUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
         "net": 54.51,
         "wr": 100.0,
@@ -104,78 +104,27 @@
   "SOLUSDT": {
     "symbol": "SOLUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
-        "net": -49.75,
-        "wr": 0.0,
-        "trades": 1
+        "net": 129.6,
+        "wr": 73.3,
+        "trades": 15
       },
       "full_180d": {
-        "net": -15.94,
-        "wr": 66.7,
-        "trades": 9
+        "net": 213.25,
+        "wr": 62.8,
+        "trades": 43
       }
     },
     "config": {
       "leverage": 10,
-      "ema_fast": 9,
-      "ema_slow": 21,
+      "ema_fast": 12,
+      "ema_slow": 26,
       "adx_period": 14,
       "atr_period": 14,
       "supertrend_period": 10,
-      "supertrend_multiplier": 2.0,
-      "use_htf_filter": true,
-      "htf_ema_fast": 21,
-      "htf_ema_slow": 50,
-      "initial_sl_percent": 3.0,
-      "trailing_activation_percent": 1.0,
-      "use_partial_tp": true,
-      "partial_tp1_percent": 2.0,
-      "partial_tp1_size_pct": 0.33,
-      "partial_tp2_percent": 5.0,
-      "partial_tp2_size_pct": 0.33,
-      "max_drawdown_percent": 20.0,
-      "cooldown_bars_after_sl": 5,
-      "adx_threshold": 35.0,
-      "chop_max_for_entry": 50.0,
-      "sl_atr_multiplier": 1.0,
-      "trailing_atr_multiplier": 1.5,
-      "use_choppiness_filter": true,
-      "chop_period": 14,
-      "use_atr_sl": true,
-      "max_signal_age_bars": 3,
-      "use_opposite_signal_exit": true,
-      "opposite_signal_requires_full_confirm": true,
-      "min_net_profit_fee_factor": 1.0,
-      "max_trades_per_hour": 4,
-      "consecutive_losses_threshold": 3,
-      "consecutive_losses_cooldown_bars": 20
-    }
-  },
-  "BNBUSDT": {
-    "symbol": "BNBUSDT",
-    "_v3_walk_forward": {
-      "version": "v3_all_pairs",
-      "test_60d": {
-        "net": -35.49,
-        "wr": 75.0,
-        "trades": 4
-      },
-      "full_180d": {
-        "net": -77.06,
-        "wr": 63.2,
-        "trades": 19
-      }
-    },
-    "config": {
-      "leverage": 10,
-      "ema_fast": 9,
-      "ema_slow": 21,
-      "adx_period": 14,
-      "atr_period": 14,
-      "supertrend_period": 10,
-      "supertrend_multiplier": 2.0,
-      "use_htf_filter": true,
+      "supertrend_multiplier": 3.0,
+      "use_htf_filter": false,
       "htf_ema_fast": 21,
       "htf_ema_slow": 50,
       "initial_sl_percent": 3.0,
@@ -188,9 +137,9 @@
       "max_drawdown_percent": 20.0,
       "cooldown_bars_after_sl": 5,
       "adx_threshold": 30.0,
-      "chop_max_for_entry": 50.0,
+      "chop_max_for_entry": 42.0,
       "sl_atr_multiplier": 1.0,
-      "trailing_atr_multiplier": 3.5,
+      "trailing_atr_multiplier": 4.0,
       "use_choppiness_filter": true,
       "chop_period": 14,
       "use_atr_sl": true,
@@ -206,7 +155,7 @@
   "XRPUSDT": {
     "symbol": "XRPUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
         "net": 16.54,
         "wr": 100.0,
@@ -257,7 +206,7 @@
   "AVAXUSDT": {
     "symbol": "AVAXUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
         "net": 185.31,
         "wr": 71.4,
@@ -305,61 +254,10 @@
       "consecutive_losses_cooldown_bars": 20
     }
   },
-  "ADAUSDT": {
-    "symbol": "ADAUSDT",
-    "_v3_walk_forward": {
-      "version": "v3_all_pairs",
-      "test_60d": {
-        "net": -97.52,
-        "wr": 0.0,
-        "trades": 2
-      },
-      "full_180d": {
-        "net": -165.67,
-        "wr": 50.0,
-        "trades": 10
-      }
-    },
-    "config": {
-      "leverage": 10,
-      "ema_fast": 9,
-      "ema_slow": 21,
-      "adx_period": 14,
-      "atr_period": 14,
-      "supertrend_period": 10,
-      "supertrend_multiplier": 2.0,
-      "use_htf_filter": true,
-      "htf_ema_fast": 21,
-      "htf_ema_slow": 50,
-      "initial_sl_percent": 3.0,
-      "trailing_activation_percent": 1.0,
-      "use_partial_tp": true,
-      "partial_tp1_percent": 2.0,
-      "partial_tp1_size_pct": 0.33,
-      "partial_tp2_percent": 5.0,
-      "partial_tp2_size_pct": 0.33,
-      "max_drawdown_percent": 20.0,
-      "cooldown_bars_after_sl": 5,
-      "adx_threshold": 35.0,
-      "chop_max_for_entry": 50.0,
-      "sl_atr_multiplier": 1.0,
-      "trailing_atr_multiplier": 2.5,
-      "use_choppiness_filter": true,
-      "chop_period": 14,
-      "use_atr_sl": true,
-      "max_signal_age_bars": 3,
-      "use_opposite_signal_exit": true,
-      "opposite_signal_requires_full_confirm": true,
-      "min_net_profit_fee_factor": 1.0,
-      "max_trades_per_hour": 4,
-      "consecutive_losses_threshold": 3,
-      "consecutive_losses_cooldown_bars": 20
-    }
-  },
   "DOGEUSDT": {
     "symbol": "DOGEUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
         "net": 18.98,
         "wr": 80.0,
@@ -410,7 +308,7 @@
   "LINKUSDT": {
     "symbol": "LINKUSDT",
     "_v3_walk_forward": {
-      "version": "v3_all_pairs",
+      "version": "v3.1_optimized",
       "test_60d": {
         "net": 0.0,
         "wr": 0.0,
