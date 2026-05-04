@@ -487,12 +487,18 @@ async def start_trading(user_id: str):
 
 @app.post("/api/v1/users/{user_id}/stop", dependencies=[Depends(verify_request)])
 async def stop_trading(user_id: str):
-    """Trading to'xtatish"""
+    """Trading to'xtatish (idempotent — agar session yo'q bo'lsa ham OK)."""
     sm = get_session_manager()
     try:
         await sm.stop_session(user_id)
         return {"status": "stopped"}
     except ValueError as e:
+        # v2.1: idempotent stop — bot redeploy'dan keyin session yo'q bo'lsa
+        # HEMA "Stopping" stuck bo'lmasligi uchun 200 qaytaramiz.
+        msg = str(e).lower()
+        if "not found" in msg or "topilmadi" in msg or "yo'q" in msg:
+            logger.info(f"Stop on non-existent session {user_id} — treating as already stopped")
+            return {"status": "stopped", "reason": "session_not_found_treated_as_stopped"}
         raise HTTPException(status_code=404, detail=str(e))
 
 
