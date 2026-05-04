@@ -115,6 +115,15 @@ class UserSession:
     max_drawdown_percent: Optional[float] = None
     cooldown_bars_after_sl: Optional[int] = None
 
+    # v2.1 yangi fields (HEMA orqali ham override qilish mumkin)
+    use_atr_sl: Optional[bool] = None
+    sl_atr_multiplier: Optional[float] = None
+    max_signal_age_bars: Optional[int] = None
+    use_opposite_signal_exit: Optional[bool] = None
+    opposite_signal_requires_full_confirm: Optional[bool] = None
+    min_net_profit_fee_factor: Optional[float] = None
+    max_trades_per_hour: Optional[int] = None
+
     # Webhook
     webhook_url: str = ""
     webhook_secret: str = ""
@@ -642,6 +651,14 @@ class SessionManager:
             partial_tp2_size_pct=_opt_float("partialTp2SizePct"),
             max_drawdown_percent=_opt_float("maxDrawdownPercent"),
             cooldown_bars_after_sl=_opt_int("cooldownBarsAfterSl"),
+            # v2.1 yangi fields
+            use_atr_sl=_opt_bool("useAtrSl"),
+            sl_atr_multiplier=_opt_float("slAtrMultiplier"),
+            max_signal_age_bars=_opt_int("maxSignalAgeBars"),
+            use_opposite_signal_exit=_opt_bool("useOppositeSignalExit"),
+            opposite_signal_requires_full_confirm=_opt_bool("oppositeSignalRequiresFullConfirm"),
+            min_net_profit_fee_factor=_opt_float("minNetProfitFeeFactor"),
+            max_trades_per_hour=_opt_int("maxTradesPerHour"),
             # Webhook
             webhook_url=webhook_url,
             webhook_secret=webhook_secret,
@@ -1105,6 +1122,14 @@ class SessionManager:
             "partial_tp2_size_pct": "partial_tp2_size_pct",
             "max_drawdown_percent": "max_drawdown_percent",
             "cooldown_bars_after_sl": "cooldown_bars_after_sl",
+            # v2.1 yangi fields
+            "use_atr_sl": "use_atr_sl",
+            "sl_atr_multiplier": "sl_atr_multiplier",
+            "max_signal_age_bars": "max_signal_age_bars",
+            "use_opposite_signal_exit": "use_opposite_signal_exit",
+            "opposite_signal_requires_full_confirm": "opposite_signal_requires_full_confirm",
+            "min_net_profit_fee_factor": "min_net_profit_fee_factor",
+            "max_trades_per_hour": "max_trades_per_hour",
         }
         for attr, key in field_map.items():
             val = getattr(session, attr, None)

@@ -327,8 +327,10 @@ class TrendRobot:
             limit=200,
         )
 
-        # HTF (har 10 tick)
-        if self.config.trend.use_htf_filter and self.tick_count % 10 == 0:
+        # HTF — har 60 tick (TICK_INTERVAL=1s da har minutda).
+        # 4H candle 14400 sekundga yetadi, 60s polling yetarli.
+        # Cache ham 300s full reload bilan ushlab turadi.
+        if self.config.trend.use_htf_filter and self.tick_count % 60 == 0:
             try:
                 self.htf_candles = await self._htf_cache.get_candles(
                     client=self.client,
@@ -353,7 +355,7 @@ class TrendRobot:
     # ─── POSITION MANAGEMENT ────────────────────────────────────────────────
 
     async def _manage_position(self) -> None:
-        """Mavjud pozitsiyani boshqarish — partial TP, trailing, SL."""
+        """Mavjud pozitsiyani boshqarish — partial TP, trailing, SL, opposite signal."""
         pos = self.strategy.position
         if pos is None or not self.candles:
             return
@@ -372,15 +374,34 @@ class TrendRobot:
         # 2. Trailing stop update
         self.strategy.update_trailing_stop(pos, self.current_price)
 
-        # 3. SL check (intrabar)
+        # 3. SL check (intrabar) — MAJBURIY EXIT, fee-aware bypass
         stop_hit = self.strategy.check_stop_hit(pos, latest.high, latest.low)
         if stop_hit is not None:
             reason = "SL" if pos.trailing_phase == TrailingPhase.NONE else "TRAIL_STOP"
+            # Trailing stop allaqachon profit'da bo'lgan ekan, bu fee-aware emas.
+            # Fixed SL ham — pozitsiya allaqachon zararda, exit majburiy.
             await self._close_position(pos, stop_hit, reason)
             self.strategy.set_cooldown(self.tick_count)
             return
 
-        # 4. Time-based exits (protects against stuck positions).
+        # 4. Opposite signal exit (yangi v2.1) — fee-aware
+        # Death cross LONG'ni yopadi, golden cross SHORT'ni — agar kuchli
+        # teskari signal bo'lsa va pozitsiya foydada bo'lsa.
+        if self.strategy.detect_opposite_exit(pos.side):
+            if self.strategy.voluntary_exit_allowed(pos, self.current_price):
+                logger.info(
+                    f"[OPPOSITE_SIGNAL] {pos.side.upper()} yopilmoqda — "
+                    f"teskari cross detected (last_cross={self.strategy._last_cross})"
+                )
+                await self._close_position(pos, self.current_price, "OPPOSITE_SIGNAL")
+                self.strategy.set_cooldown(self.tick_count)
+                return
+            else:
+                logger.debug(
+                    "[OPPOSITE_SIGNAL] Skipped — voluntary exit fee-not-covered"
+                )
+
+        # 5. Time-based exits (protects against stuck positions).
         #
         # Production issue observed 2026-04-23: AVAXUSDT SHORT opened at $9.196
         # sat open for 14+ hours as ADX decayed from 28 -> 22 and price drifted
@@ -389,10 +410,8 @@ class TrendRobot:
         #
         # Two rules, soft first then hard:
         #   (a) TREND_EXHAUSTION: position open > 12h AND ADX has decayed
-        #       3 points below the entry threshold. Normal exit.
-        #   (b) MAX_AGE: hard safety cap at 24h regardless of ADX. A
-        #       healthy trend that's going to pay off should have done
-        #       so by then; anything still open is just bleeding funding.
+        #       3 points below the entry threshold. Voluntary exit (fee-aware).
+        #   (b) MAX_AGE: hard safety cap at 24h regardless of ADX. Majburiy.
         SOFT_HOLD_HOURS = 12
         HARD_MAX_HOURS = 24
         EXHAUSTION_MARGIN = 3.0
@@ -412,6 +431,7 @@ class TrendRobot:
         if (
             opened_age_hours > SOFT_HOLD_HOURS
             and adx_now < (self.strategy.cfg.adx_threshold - EXHAUSTION_MARGIN)
+            and self.strategy.voluntary_exit_allowed(pos, self.current_price)
         ):
             logger.info(
                 f"[TREND_EXHAUSTION] Force-closing {pos.side.upper()} after "
@@ -433,30 +453,71 @@ class TrendRobot:
         if signal == SignalType.NONE:
             return
 
-        trade_amount = self._session_trade_amount if self._session_trade_amount > 0 else self.balance
+        # Trade amount semantikasi: MARGIN to allocate (USDT'da).
+        # Notional = trade_amount × leverage (calculate_position_size'da).
+        #
+        # v2.0 BUG: agar _session_trade_amount=0, butun balans ishlatilardi:
+        #   trade_amount = balance (1000$) × leverage (10) = $10K notional!
+        # v2.1 FIX: balansning CAPITAL_ENGAGEMENT (default 15%) qismi ishlatamiz:
+        #   trade_amount = $1000 × 0.15 = $150 margin × 10 leverage = $1500 notional
+        if self._session_trade_amount > 0:
+            trade_amount = self._session_trade_amount
+        else:
+            engagement = max(0.0, min(1.0, self.config.CAPITAL_ENGAGEMENT))
+            trade_amount = self.balance * engagement
+            if trade_amount <= 0:
+                logger.debug(
+                    f"Trade amount = 0 (balance=${self.balance:.2f}, "
+                    f"engagement={engagement})"
+                )
+                return
+
         size = self.strategy.calculate_position_size(
             self.current_price, trade_amount, self.config.trading.LEVERAGE
         )
         if size <= 0:
-            logger.debug(f"Position size too small: {size}")
+            logger.debug(
+                f"Position size too small: trade_amount=${trade_amount:.2f}, "
+                f"price=${self.current_price:.4f}, leverage={self.config.trading.LEVERAGE}"
+            )
             return
 
         async with self._order_lock:
-            await self._open_position(signal, size)
-            # Signal ishlatildi — consume
+            opened = await self._open_position(signal, size)
+            # Signal ishlatildi — har holda consume (false signal qayta ko'tarilmasin).
             self.strategy.consume_signal()
+            # Trades-per-hour rolling window — faqat haqiqiy entry'da
+            if opened:
+                self.strategy.register_entry()
 
-    async def _open_position(self, signal: SignalType, size: float) -> None:
+    async def _open_position(self, signal: SignalType, size: float) -> bool:
+        """
+        Pozitsiya ochish. True = ochildi, False = ochilmadi (xato yoki rad).
+
+        Margin pre-check: faqat yangi pozitsiyaning margin'ini emas, BUTUN
+        exposure'ni hisoblaydi (mavjud + yangi). Bu bir necha pozitsiya bir
+        vaqtda ochilsa liquidation risk'idan saqlaydi.
+        """
         side = "long" if signal == SignalType.LONG else "short"
         try:
-            # Margin check
-            required_margin = (size * self.current_price) / self._current_leverage
-            if self.balance < required_margin * 1.1:
+            # Yangi pozitsiya margin
+            new_margin = (size * self.current_price) / self._current_leverage
+
+            # Mavjud pozitsiya (agar bor bo'lsa) margin
+            existing_margin = 0.0
+            if self.strategy.position is not None:
+                p = self.strategy.position
+                existing_margin = (p.size * p.entry_price) / max(self._current_leverage, 1)
+
+            # Total margin needed (mavjud + yangi) + 10% buffer
+            total_required = (existing_margin + new_margin) * 1.1
+            if self.balance < total_required:
                 logger.warning(
-                    f"Insufficient balance: required=${required_margin:.2f}, "
+                    f"Insufficient balance: total_required=${total_required:.2f} "
+                    f"(existing=${existing_margin:.2f}, new=${new_margin:.2f}), "
                     f"available=${self.balance:.2f}"
                 )
-                return
+                return False
 
             if side == "long":
                 result = await self.client.open_long(
@@ -482,9 +543,11 @@ class TrendRobot:
                 f"(SL: ${pos.stop_price:.4f}) — ADX={self.strategy.adx.value:.1f} "
                 f"ST={self.strategy.supertrend.direction}"
             )
+            return True
 
         except BitgetAPIError as e:
             logger.error(f"Open {side} xato: {e}")
+            return False
 
     # ─── CLOSE ───────────────────────────────────────────────────────────────
 

@@ -1,14 +1,18 @@
 """
-Trend Following Robot — Technical Indicators (v2.0)
+Trend Following Robot — Technical Indicators (v2.1)
 
 - EMA: trend anchor, crossover signal
 - ATR: volatility, trailing stop, Supertrend
 - ADX: trend strength filter
 - Supertrend: ATR-based trend direction
 - EMACrossover: Golden/Death cross detector
+- ChoppinessIndex (v2.1): consolidation vs trending market detector
+  - CHOP < 38.2 = strong trend (good for trend-following entry)
+  - CHOP > 61.8 = consolidation/choppy (avoid — false signals)
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Tuple
@@ -372,3 +376,87 @@ class EMACrossover:
         if candles:
             self.fast.update(candles[-1].close)
             self.slow.update(candles[-1].close)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#                             CHOPPINESS INDEX (v2.1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ChoppinessIndex:
+    """
+    Choppiness Index — bozorning trending vs sideways/consolidation holatini aniqlaydi.
+
+    Formula:
+        CHOP(n) = 100 * log10( SUM(TR, n) / (max(High, n) - min(Low, n)) ) / log10(n)
+
+    Talqin:
+        CHOP < 38.2: kuchli trend (entry uchun yaxshi)
+        CHOP > 61.8: konsolidatsiya / choppy (entry'dan saqlanish)
+        38.2-61.8: neytral
+
+    Trend-following bot uchun: faqat CHOP past bo'lsa (trending) entry qilish.
+    """
+
+    def __init__(self, period: int = 14):
+        self.period = period
+        self._candles: List[Candle] = []
+        self._chop: float = 50.0  # neutral default
+        self._initialized = False
+        # log10(period) — formuladan har safar hisoblamaslik uchun
+        self._log_period = math.log10(period) if period > 1 else 1.0
+
+    @property
+    def value(self) -> float:
+        return self._chop
+
+    @property
+    def initialized(self) -> bool:
+        return self._initialized
+
+    def is_trending(self, threshold: float = 38.2) -> bool:
+        """CHOP < threshold => trending (entry uchun OK)."""
+        return self._initialized and self._chop < threshold
+
+    def is_choppy(self, threshold: float = 61.8) -> bool:
+        """CHOP > threshold => konsolidatsiya."""
+        return self._initialized and self._chop > threshold
+
+    def update(self, candle: Candle) -> float:
+        self._candles.append(candle)
+        if len(self._candles) > self.period + 1:
+            self._candles.pop(0)
+        if len(self._candles) < self.period + 1:
+            return self._chop
+
+        # True Range (period bar uchun)
+        recent = self._candles[-self.period:]
+        prev_closes = [self._candles[i].close for i in range(-self.period - 1, -1)]
+        sum_tr = 0.0
+        for i, c in enumerate(recent):
+            pc = prev_closes[i]
+            tr = max(c.high - c.low, abs(c.high - pc), abs(c.low - pc))
+            sum_tr += tr
+        # max(high) - min(low) over period
+        max_high = max(c.high for c in recent)
+        min_low = min(c.low for c in recent)
+        rng = max_high - min_low
+
+        if rng <= 0 or sum_tr <= 0:
+            return self._chop  # avoid log(0) yoki div by zero
+
+        try:
+            self._chop = 100.0 * math.log10(sum_tr / rng) / self._log_period
+            self._initialized = True
+        except (ValueError, ZeroDivisionError):
+            pass
+
+        return self._chop
+
+    def calculate_from_candles(self, candles: List[Candle]) -> float:
+        self._candles = []
+        self._chop = 50.0
+        self._initialized = False
+        for c in candles:
+            self.update(c)
+        return self._chop

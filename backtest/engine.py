@@ -94,7 +94,12 @@ class BacktestConfig:
     htf_timeframe: str = "4H"
 
     leverage: int = 10
+    # Trade amount semantikasi (v2.1): MARGIN to allocate per trade.
+    # Notional = trade_amount × leverage.
     trade_amount: float = 1000.0
+    # Fallback agar `trade_amount=0`: balansning shu qismidan margin olinadi.
+    # robot.py:_check_new_entry da CAPITAL_ENGAGEMENT bilan mos.
+    capital_engagement: float = 0.15
 
     taker_fee: float = 0.0006
     funding_rate_per_8h: float = 0.0001
@@ -102,19 +107,31 @@ class BacktestConfig:
     # Strategy params
     ema_fast: int = 9
     ema_slow: int = 21
+    max_signal_age_bars: int = 3
     atr_period: int = 14
     adx_period: int = 14
     adx_threshold: float = 20.0
     supertrend_period: int = 10
     supertrend_multiplier: float = 3.0
 
+    # Choppiness Index filter (v2.1) — choppy market'larda entry rad etiladi
+    use_choppiness_filter: bool = True
+    chop_period: int = 14
+    chop_max_for_entry: float = 50.0
+
+    # Consecutive losses cooldown (loop guard / regime change detector)
+    consecutive_losses_threshold: int = 3
+    consecutive_losses_cooldown_bars: int = 20
+
     # HTF filter (4H candles)
     use_htf_filter: bool = True
     htf_ema_fast: int = 21
     htf_ema_slow: int = 50
 
-    # Exit
+    # Exit — fixed % + ATR-adaptive
     initial_sl_percent: float = 3.0
+    use_atr_sl: bool = True
+    sl_atr_multiplier: float = 2.0
     trailing_activation_percent: float = 1.0  # move to breakeven at +1%
     trailing_atr_multiplier: float = 1.5       # trailing distance = 1.5 × ATR
 
@@ -125,9 +142,19 @@ class BacktestConfig:
     partial_tp2_percent: float = 5.0
     partial_tp2_size_pct: float = 0.33  # close 33%
 
+    # Opposite signal exit
+    use_opposite_signal_exit: bool = True
+    opposite_signal_requires_full_confirm: bool = True
+
+    # Fee-aware voluntary exit (1.0 = exit must AT LEAST cover fees)
+    min_net_profit_fee_factor: float = 1.0
+
     # Risk
     max_drawdown_percent: float = 20.0
     cooldown_bars_after_sl: int = 5
+
+    # Trades-per-hour limit (loop-bug guard)
+    max_trades_per_hour: int = 4
 
     initial_balance: float = 0.0
 
@@ -211,6 +238,37 @@ def calc_adx(candles: List[Candle], period: int = 14) -> List[float]:
     return adx
 
 
+def calc_chop(candles: List[Candle], period: int = 14) -> List[float]:
+    """
+    Choppiness Index — bar bo'yicha. Returns list of float same length as candles.
+    Past CHOP (~< 38) = trending, yuqori CHOP (~> 62) = sideways.
+    """
+    n = len(candles)
+    if n < period + 1:
+        return [50.0] * n
+    log_period = math.log10(period)
+    out = [50.0] * n
+    for i in range(period, n):
+        window = candles[i - period + 1:i + 1]  # period bars (inclusive of i)
+        sum_tr = 0.0
+        for j in range(len(window)):
+            c = window[j]
+            pc = candles[i - period + j].close if (i - period + j) >= 0 else c.close
+            tr = max(c.high - c.low, abs(c.high - pc), abs(c.low - pc))
+            sum_tr += tr
+        max_high = max(c.high for c in window)
+        min_low = min(c.low for c in window)
+        rng = max_high - min_low
+        if rng <= 0 or sum_tr <= 0:
+            out[i] = out[i - 1] if i > 0 else 50.0
+            continue
+        try:
+            out[i] = 100.0 * math.log10(sum_tr / rng) / log_period
+        except (ValueError, ZeroDivisionError):
+            out[i] = 50.0
+    return out
+
+
 def calc_supertrend(candles: List[Candle], period: int = 10,
                     multiplier: float = 3.0) -> List[tuple]:
     """
@@ -278,78 +336,175 @@ def calc_supertrend(candles: List[Candle], period: int = 10,
 
 class SmartTrendStrategy:
     """
-    Smart Trend Following v2.0
+    Smart Trend Following v2.1
 
     Entry signal (barcha kerak):
-    1. EMA(fast) Golden/Death Cross EMA(slow)
+    1. EMA(fast) Golden/Death Cross EMA(slow) — yangi (max_signal_age_bars ichida)
     2. Supertrend direction aligned
     3. ADX > threshold
     4. Optional: HTF trend filter
+
+    Exit:
+    - Initial SL: max(fixed%, ATR*sl_atr_multiplier)
+    - 3-phase trailing
+    - Partial TP (optional)
+    - Opposite signal exit (fee-aware)
     """
 
     def __init__(self, config: BacktestConfig):
         self.cfg = config
         self.position: Optional[Position] = None
-        self.last_ema_cross_bar: int = -1
+        # Last detected cross + bar index (stale check)
+        self.last_cross: Optional[str] = None  # "golden_cross" | "death_cross" | None
+        self.last_cross_bar: int = -1
         self.cooldown_until_bar: int = 0
+        self.atr_at_entry: float = 0.0
+        # Trades-per-hour rolling window (bar indices)
+        self.recent_trade_bars: List[int] = []
+
+    # --- Signal helpers ---
+    def _check_full_filters(self, signal: Signal, i: int,
+                            supertrend: List[tuple], adx: List[float],
+                            htf_ema_fast: Optional[float],
+                            htf_ema_slow: Optional[float],
+                            chops: Optional[List[float]] = None) -> bool:
+        if adx[i] < self.cfg.adx_threshold:
+            return False
+        # Choppiness filter (v2.1) — choppy market'da entry blok
+        if self.cfg.use_choppiness_filter and chops is not None:
+            chop_val = chops[i]
+            if chop_val > self.cfg.chop_max_for_entry:
+                return False
+        st_val, st_dir = supertrend[i]
+        if signal == Signal.LONG and st_dir != 1:
+            return False
+        if signal == Signal.SHORT and st_dir != -1:
+            return False
+        if self.cfg.use_htf_filter and htf_ema_fast is not None and htf_ema_slow is not None:
+            if htf_ema_fast > 0 and htf_ema_slow > 0:
+                if signal == Signal.LONG and htf_ema_fast < htf_ema_slow:
+                    return False
+                if signal == Signal.SHORT and htf_ema_fast > htf_ema_slow:
+                    return False
+        return True
+
+    def _is_rate_limited(self, i: int, bars_per_hour: int) -> bool:
+        """Trades-per-hour limit check (bar indices'ga asoslanadi)."""
+        if self.cfg.max_trades_per_hour <= 0:
+            return False
+        cutoff = i - bars_per_hour
+        self.recent_trade_bars = [b for b in self.recent_trade_bars if b > cutoff]
+        return len(self.recent_trade_bars) >= self.cfg.max_trades_per_hour
 
     def detect_signal(self, i: int, ema_fast: List[float], ema_slow: List[float],
                       supertrend: List[tuple], adx: List[float],
                       htf_ema_fast: Optional[float] = None,
-                      htf_ema_slow: Optional[float] = None) -> Signal:
-        """Signal detection — all layers must agree."""
+                      htf_ema_slow: Optional[float] = None,
+                      bars_per_hour: int = 4,
+                      chops: Optional[List[float]] = None) -> Signal:
+        """Signal detection — all layers must agree, fresh cross required."""
         if i < self.cfg.ema_slow + 5:
             return Signal.NONE
 
-        # Cooldown after SL
+        # Cooldown after SL (default + streak)
         if i < self.cooldown_until_bar:
             return Signal.NONE
 
-        # 1. EMA crossover (exact moment)
+        # Trades-per-hour limit
+        if self._is_rate_limited(i, bars_per_hour):
+            return Signal.NONE
+
+        # 1. EMA crossover (exact moment) — track latest cross
         prev_fast, prev_slow = ema_fast[i - 1], ema_slow[i - 1]
         cur_fast, cur_slow = ema_fast[i], ema_slow[i]
+        if prev_fast <= prev_slow and cur_fast > cur_slow:
+            self.last_cross = "golden_cross"
+            self.last_cross_bar = i
+        elif prev_fast >= prev_slow and cur_fast < cur_slow:
+            self.last_cross = "death_cross"
+            self.last_cross_bar = i
 
-        golden_cross = prev_fast <= prev_slow and cur_fast > cur_slow
-        death_cross = prev_fast >= prev_slow and cur_fast < cur_slow
-
-        if not (golden_cross or death_cross):
+        if self.last_cross is None:
             return Signal.NONE
 
-        signal = Signal.LONG if golden_cross else Signal.SHORT
-
-        # 2. ADX filter
-        if adx[i] < self.cfg.adx_threshold:
+        # Stale check — cross max_signal_age_bars dan eski emas
+        age = i - self.last_cross_bar
+        if age > self.cfg.max_signal_age_bars:
+            self.last_cross = None
             return Signal.NONE
 
-        # 3. Supertrend alignment
-        st_val, st_dir = supertrend[i]
-        if signal == Signal.LONG and st_dir != 1:
-            return Signal.NONE
-        if signal == Signal.SHORT and st_dir != -1:
-            return Signal.NONE
+        signal = Signal.LONG if self.last_cross == "golden_cross" else Signal.SHORT
 
-        # 4. HTF filter (optional)
-        if self.cfg.use_htf_filter and htf_ema_fast is not None and htf_ema_slow is not None:
-            if htf_ema_fast <= 0 or htf_ema_slow <= 0:
-                pass  # HTF not ready yet, allow signal
-            elif signal == Signal.LONG and htf_ema_fast < htf_ema_slow:
-                return Signal.NONE  # HTF is bearish, skip long
-            elif signal == Signal.SHORT and htf_ema_fast > htf_ema_slow:
-                return Signal.NONE
+        # 2-4. Full filter (CHOP + ADX + ST + HTF)
+        if not self._check_full_filters(signal, i, supertrend, adx,
+                                         htf_ema_fast, htf_ema_slow, chops=chops):
+            return Signal.NONE
 
         return signal
 
-    def calculate_position_size(self, price: float) -> float:
-        """Position size — capital × leverage / price."""
+    def detect_opposite_exit(self, current_side: str, i: int,
+                             supertrend: List[tuple], adx: List[float],
+                             htf_ema_fast: Optional[float] = None,
+                             htf_ema_slow: Optional[float] = None,
+                             chops: Optional[List[float]] = None) -> bool:
+        """LONG + death_cross => True (exit), SHORT + golden_cross => True."""
+        if not self.cfg.use_opposite_signal_exit:
+            return False
+        if self.last_cross is None:
+            return False
+        # Stale check
+        if (i - self.last_cross_bar) > self.cfg.max_signal_age_bars:
+            return False
+        is_opposite = (
+            (current_side == "long" and self.last_cross == "death_cross")
+            or (current_side == "short" and self.last_cross == "golden_cross")
+        )
+        if not is_opposite:
+            return False
+        if self.cfg.opposite_signal_requires_full_confirm:
+            opp = Signal.SHORT if current_side == "long" else Signal.LONG
+            if not self._check_full_filters(opp, i, supertrend, adx,
+                                             htf_ema_fast, htf_ema_slow, chops=chops):
+                return False
+        return True
+
+    def calculate_position_size(self, price: float, balance: Optional[float] = None) -> float:
+        """
+        Position size — margin × leverage / price.
+
+        v2.1 semantikasi: trade_amount = MARGIN to allocate (not the full notional).
+        notional = trade_amount × leverage; size = notional / price.
+
+        Agar trade_amount=0 va balance berilgan bo'lsa: balance × capital_engagement.
+        """
         if price <= 0:
             return 0.0
-        return (self.cfg.trade_amount * self.cfg.leverage) / price
+        margin = self.cfg.trade_amount
+        if margin <= 0 and balance is not None:
+            margin = balance * max(0.0, min(1.0, self.cfg.capital_engagement))
+        if margin <= 0:
+            return 0.0
+        return (margin * self.cfg.leverage) / price
 
-    def initial_stop_loss(self, side: str, entry: float) -> float:
+    def initial_stop_loss(self, side: str, entry: float, atr: float = 0.0) -> float:
+        """SL = max(fixed%, ATR*sl_atr_multiplier) (agar use_atr_sl=True)."""
         sl_pct = self.cfg.initial_sl_percent / 100
+        if self.cfg.use_atr_sl and atr > 0 and entry > 0:
+            atr_pct = (self.cfg.sl_atr_multiplier * atr) / entry
+            sl_pct = max(sl_pct, atr_pct)
         if side == "long":
             return entry * (1 - sl_pct)
         return entry * (1 + sl_pct)
+
+    def voluntary_exit_allowed(self, pos: Position, exit_price: float) -> bool:
+        """Fee-aware: gross >= factor × round-trip fee."""
+        factor = self.cfg.min_net_profit_fee_factor
+        if factor <= 0:
+            return True
+        gross = pos.unrealized_pnl(exit_price)
+        entry_fee = pos.entry_price * pos.size * self.cfg.taker_fee
+        exit_fee = exit_price * pos.size * self.cfg.taker_fee
+        return gross >= factor * (entry_fee + exit_fee)
 
     def update_trailing_stop(self, pos: Position, price: float, atr: float) -> None:
         """3-phase trailing stop."""
@@ -506,6 +661,10 @@ class Backtester:
         adxs = calc_adx(self.candles, self.cfg.adx_period)
         supertrend = calc_supertrend(self.candles, self.cfg.supertrend_period,
                                      self.cfg.supertrend_multiplier)
+        # Choppiness Index — choppy market filtri uchun (v2.1)
+        chops = calc_chop(self.candles, self.cfg.chop_period)
+        # Consecutive losses tracker (engine local — doesn't need state across runs)
+        consecutive_losses = 0
 
         # HTF EMAs (mapped to each candle by timestamp)
         htf_ema_fast_map = {}
@@ -528,6 +687,11 @@ class Backtester:
             return (htf_ema_fast_map[latest], htf_ema_slow_map[latest])
 
         warmup = max(self.cfg.ema_slow, self.cfg.adx_period * 2, self.cfg.supertrend_period) + 5
+
+        # Bars per hour (timeframe asosida) — trades-per-hour limit uchun
+        from trend_robot.strategy import timeframe_to_seconds
+        tf_seconds = timeframe_to_seconds(self.cfg.timeframe)
+        bars_per_hour = max(1, 3600 // max(tf_seconds, 1))
 
         for i in range(warmup, len(self.candles)):
             c = self.candles[i]
@@ -555,21 +719,63 @@ class Backtester:
                 # Update trailing stop
                 self.strategy.update_trailing_stop(pos, c.close, atr)
 
-                # Check SL (intrabar using high/low)
+                # Check SL (intrabar using high/low) — MAJBURIY exit
                 stop_hit = self.strategy.check_stop_hit(pos, c)
                 if stop_hit is not None:
+                    is_real_sl = pos.trailing_phase == TrailingPhase.NONE
                     self._close_position(pos, stop_hit, c.timestamp,
-                                         "SL" if pos.trailing_phase == TrailingPhase.NONE else "TRAIL_STOP")
+                                         "SL" if is_real_sl else "TRAIL_STOP")
+                    self.strategy.cooldown_until_bar = i + self.cfg.cooldown_bars_after_sl
+                    # Consecutive losses tracking (faqat haqiqiy SL — TRAIL_STOP odatda profitable)
+                    if is_real_sl:
+                        consecutive_losses += 1
+                        if (
+                            self.cfg.consecutive_losses_threshold > 0
+                            and consecutive_losses >= self.cfg.consecutive_losses_threshold
+                        ):
+                            extra = self.cfg.consecutive_losses_cooldown_bars
+                            self.strategy.cooldown_until_bar = max(
+                                self.strategy.cooldown_until_bar, i + extra
+                            )
+                            consecutive_losses = 0  # reset, qaytadan sanovni boshlaymiz
+                    else:
+                        consecutive_losses = 0
+                    # Continue loop — pozitsiya yopildi
+                    unrealized = 0.0
+                    equity = self.balance
+                    self.peak_balance = max(self.peak_balance, equity)
+                    self.balance_history.append((c.timestamp, equity))
+                    continue
+
+                # Opposite signal exit (yangi v2.1) — fee-aware
+                # First update last_cross by re-running detect_signal logic on this bar
+                # (without consuming): we update_indicators-style track of cross
+                prev_fast, prev_slow = ema_fast[i - 1], ema_slow[i - 1]
+                cur_fast, cur_slow = ema_fast[i], ema_slow[i]
+                if prev_fast <= prev_slow and cur_fast > cur_slow:
+                    self.strategy.last_cross = "golden_cross"
+                    self.strategy.last_cross_bar = i
+                elif prev_fast >= prev_slow and cur_fast < cur_slow:
+                    self.strategy.last_cross = "death_cross"
+                    self.strategy.last_cross_bar = i
+
+                htf_ef, htf_es = get_htf_emas(c.timestamp)
+                if self.strategy.detect_opposite_exit(
+                    pos.side, i, supertrend, adxs, htf_ef, htf_es, chops=chops
+                ) and self.strategy.voluntary_exit_allowed(pos, c.close):
+                    self._close_position(pos, c.close, c.timestamp, "OPPOSITE_SIGNAL")
                     self.strategy.cooldown_until_bar = i + self.cfg.cooldown_bars_after_sl
 
             # 2. Entry check (no position)
             if self.strategy.position is None:
                 htf_ef, htf_es = get_htf_emas(c.timestamp)
-                signal = self.strategy.detect_signal(i, ema_fast, ema_slow, supertrend,
-                                                     adxs, htf_ef, htf_es)
+                signal = self.strategy.detect_signal(
+                    i, ema_fast, ema_slow, supertrend, adxs,
+                    htf_ef, htf_es, bars_per_hour=bars_per_hour, chops=chops,
+                )
                 if signal != Signal.NONE:
                     side = "long" if signal == Signal.LONG else "short"
-                    size = self.strategy.calculate_position_size(c.close)
+                    size = self.strategy.calculate_position_size(c.close, balance=self.balance)
                     if size > 0:
                         entry_fee = c.close * size * self.cfg.taker_fee
                         self.total_fees += entry_fee
@@ -578,7 +784,15 @@ class Backtester:
                             opened_at=c.timestamp, entry_fee=entry_fee,
                             initial_size=size,
                         )
-                        self.strategy.position.stop_price = self.strategy.initial_stop_loss(side, c.close)
+                        # ATR-based SL ham hisobga olamiz
+                        self.strategy.position.stop_price = self.strategy.initial_stop_loss(
+                            side, c.close, atr=atr
+                        )
+                        self.strategy.atr_at_entry = atr
+                        # Trades-per-hour rolling window'ga qo'shamiz
+                        self.strategy.recent_trade_bars.append(i)
+                        # Signal consume — bir cross'da bir entry
+                        self.strategy.last_cross = None
 
             # Track balance history
             unrealized = self.strategy.position.unrealized_pnl(c.close) if self.strategy.position else 0.0

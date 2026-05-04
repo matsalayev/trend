@@ -1,17 +1,28 @@
 """
-Trend Following Robot — Smart Trend Strategy v2.0
+Trend Following Robot — Smart Trend Strategy v2.1
 
 Mantiq:
-1. EMA(fast) Golden/Death Cross EMA(slow) — asosiy signal
+1. EMA(fast) Golden/Death Cross EMA(slow) — asosiy signal (yangi cross, eski emas)
 2. Supertrend direction aligned — tasdiq
 3. ADX > threshold — trend kuchi filtri
 4. Higher Timeframe (4H) EMA trend — kattabosib filter (optional)
 
 Exit:
-- Initial SL (fixed %)
+- Initial SL (fixed % YOKI ATR-based, max(ikkalasi))
 - 3-phase trailing stop (None → Breakeven → Trailing with ATR floor)
 - Partial TP (33% at 2%, 33% at 5%, trailing qoladi) — optional
+- Opposite signal close (death cross LONG'ni yopadi, golden cross SHORT'ni)
+- Fee-aware voluntary exit (faqat net profit fee'ni qoplaganda)
 - Circuit breaker (max drawdown)
+
+v2.1 fixes:
+- Position size formula: trade_amount = MARGIN, notional = margin * leverage (correct)
+- Cooldown candle-bar based (timestamp), tick'da emas
+- Stale EMA cross filter (max_signal_age_bars)
+- ATR-adaptive stop loss
+- Opposite signal exit
+- Fee-aware exit threshold
+- Trades-per-hour limit (loop bug himoyasi)
 """
 
 import logging
@@ -25,6 +36,7 @@ from .indicators import (
     ADXIndicator,
     ATRIndicator,
     Candle,
+    ChoppinessIndex,
     EMACrossover,
     EMAIndicator,
     SupertrendIndicator,
@@ -33,6 +45,19 @@ from .indicators import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Timeframe → seconds (cooldown / signal-age conversion uchun)
+_TIMEFRAME_SECONDS = {
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+    "1h": 3600, "1H": 3600, "2h": 7200, "2H": 7200,
+    "4h": 14400, "4H": 14400, "6h": 21600, "6H": 21600,
+    "12h": 43200, "12H": 43200, "1d": 86400, "1D": 86400,
+}
+
+
+def timeframe_to_seconds(tf: str) -> int:
+    return _TIMEFRAME_SECONDS.get(tf, 900)  # default 15m
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -151,6 +176,7 @@ class TrendStrategy:
             period=self.cfg.supertrend_period,
             multiplier=self.cfg.supertrend_multiplier,
         )
+        self.chop = ChoppinessIndex(period=self.cfg.chop_period)
 
         # HTF (Higher Timeframe) indikatorlar
         self.htf_ema_fast = EMAIndicator(period=self.cfg.htf_ema_fast)
@@ -170,19 +196,34 @@ class TrendStrategy:
         self._max_drawdown_percent: float = 0.0
         self._stopped: bool = False
 
-        # Cooldown after SL (tick counter)
-        self._cooldown_until_tick: int = 0
+        # Cooldown after SL — TIMESTAMP asosida (ms), tick'da emas.
+        # Robot timestamp asosida candle bar'ga aylantiradi.
+        self._cooldown_until_ts: float = 0.0
 
-        # Last ema cross info
+        # Last ema cross info — timestamp ham saqlanadi (stale check uchun)
         self._last_cross: Optional[str] = None
-        self._last_signal_ts: float = 0.0
+        self._last_cross_ts: int = 0  # ms — last detected cross candle timestamp
+        self._last_candle_ts: int = 0  # ms — most recent candle ts (signal age uchun)
+
+        # Trades-per-hour tracking — fee-bleed loop himoyasi
+        # Last N trade timestamp'lari (rolling window)
+        self._recent_trade_ts: List[float] = []
+
+        # Consecutive losses tracker (v2.1) — agar oxirgi N ta trade ketma-ket
+        # zarar bo'lsa, qo'shimcha cooldown qo'yiladi (choppy market signal).
+        self._consecutive_losses: int = 0
+        self._streak_cooldown_until_ts: float = 0.0
 
         self._symbol_info: Optional[dict] = None
 
         logger.info(
-            f"TrendStrategy v2.0 created: EMA({self.cfg.ema_fast}/{self.cfg.ema_slow}), "
+            f"TrendStrategy v2.1 created: EMA({self.cfg.ema_fast}/{self.cfg.ema_slow}), "
             f"ADX>{self.cfg.adx_threshold}, ST({self.cfg.supertrend_period}×{self.cfg.supertrend_multiplier}), "
-            f"HTF={self.cfg.use_htf_filter}, PartialTP={self.cfg.use_partial_tp}"
+            f"HTF={self.cfg.use_htf_filter}, PartialTP={self.cfg.use_partial_tp}, "
+            f"ATR_SL={self.cfg.use_atr_sl}, OppositeExit={self.cfg.use_opposite_signal_exit}, "
+            f"CHOP_filter={self.cfg.use_choppiness_filter} (max={self.cfg.chop_max_for_entry}), "
+            f"MaxTradesPerHour={self.cfg.max_trades_per_hour}, "
+            f"ConsecLossThreshold={self.cfg.consecutive_losses_threshold}"
         )
 
     def set_symbol_info(self, info: dict) -> None:
@@ -205,19 +246,28 @@ class TrendStrategy:
             period=self.cfg.supertrend_period,
             multiplier=self.cfg.supertrend_multiplier,
         )
+        self.chop = ChoppinessIndex(period=self.cfg.chop_period)
 
-        # Update through all candles (keeps track of last cross for signal detection)
+        # Update through all candles. Track last cross AND its timestamp for
+        # stale-signal filtering. v2.0 had a bug where update_indicators would
+        # re-discover an old cross (e.g. 50 candles ago) and re-trigger entry.
+        # We now record cross_ts and detect_signal compares against the latest
+        # candle timestamp.
         last_cross = None
+        last_cross_ts = 0
         for c in candles:
             cross = self.ema.update(c)
             self.atr.update(c)
             self.adx.update(c)
             self.supertrend.update(c)
+            self.chop.update(c)
             if cross:
                 last_cross = cross
-                self._last_signal_ts = c.timestamp
+                last_cross_ts = c.timestamp
 
         self._last_cross = last_cross
+        self._last_cross_ts = last_cross_ts
+        self._last_candle_ts = candles[-1].timestamp
 
     def update_htf_indicators(self, htf_candles: List[Candle]) -> None:
         """Higher Timeframe EMA fast/slow yangilash."""
@@ -231,10 +281,72 @@ class TrendStrategy:
 
     # ─── SIGNAL ──────────────────────────────────────────────────────────────
 
-    def detect_signal(self, current_price: float, tick: int = 0) -> SignalType:
+    # Internal: shared signal-quality gate used by both entry and opposite-exit.
+    def _check_full_signal_filters(self, signal: "SignalType") -> bool:
+        """ADX + Supertrend + HTF + CHOP filtrlar o'tdimi?"""
+        # ADX filter
+        if self.adx.value < self.cfg.adx_threshold:
+            return False
+
+        # Choppiness Index filter (v2.1) — choppy market'da entry rad etiladi
+        # Diagnostika ko'rsatdi: yo'qotuvchi oynalardagi SL'lar
+        # CHOP yuqori bo'lgan davrlarda (false trend signal) ko'p bo'ladi.
+        if self.cfg.use_choppiness_filter and self.chop.initialized:
+            if self.chop.value > self.cfg.chop_max_for_entry:
+                return False
+
+        # Supertrend alignment
+        st_dir = self.supertrend.direction
+        if signal == SignalType.LONG and st_dir != 1:
+            return False
+        if signal == SignalType.SHORT and st_dir != -1:
+            return False
+        # HTF filter (optional)
+        if self.cfg.use_htf_filter:
+            if self.htf_ema_fast.initialized and self.htf_ema_slow.initialized:
+                htf_fast = self.htf_ema_fast.value
+                htf_slow = self.htf_ema_slow.value
+                if signal == SignalType.LONG and htf_fast < htf_slow:
+                    return False
+                if signal == SignalType.SHORT and htf_fast > htf_slow:
+                    return False
+        return True
+
+    def _signal_age_bars(self) -> int:
+        """Last cross necha candle bar oldin sodir bo'lgan."""
+        if self._last_cross_ts <= 0 or self._last_candle_ts <= 0:
+            return 999  # unknown — treat as stale
+        bar_ms = timeframe_to_seconds(self.cfg.timeframe) * 1000
+        if bar_ms <= 0:
+            return 0
+        return max(0, (self._last_candle_ts - self._last_cross_ts) // bar_ms)
+
+    def _is_in_cooldown(self, now_ts: Optional[float] = None) -> bool:
+        """Timestamp asosida cooldown — tick'lar emas. Streak cooldown ham hisoblanadi."""
+        now = now_ts if now_ts is not None else time.time()
+        if self._cooldown_until_ts > 0 and now < self._cooldown_until_ts:
+            return True
+        if self._streak_cooldown_until_ts > 0 and now < self._streak_cooldown_until_ts:
+            return True
+        return False
+
+    def _is_rate_limited(self, now_ts: Optional[float] = None) -> bool:
+        """Trades-per-hour limit (loop-bug himoyasi)."""
+        if self.cfg.max_trades_per_hour <= 0:
+            return False
+        now = now_ts if now_ts is not None else time.time()
+        # Rolling window: oxirgi soatda ochilgan trade'lar soni
+        cutoff = now - 3600
+        self._recent_trade_ts = [t for t in self._recent_trade_ts if t >= cutoff]
+        return len(self._recent_trade_ts) >= self.cfg.max_trades_per_hour
+
+    def detect_signal(self, current_price: float, tick: int = 0,
+                      now_ts: Optional[float] = None) -> SignalType:
         """
         Signal aniqlash — barcha qatlamlar rozi bo'lishi kerak.
-        EMA Crossover (moment) + Supertrend + ADX + HTF (optional)
+        EMA Crossover (moment, < max_signal_age_bars) + Supertrend + ADX + HTF (optional).
+
+        Cooldown va trades-per-hour limit ham bu yerda enforce qilinadi.
         """
         if not self.ema.initialized:
             return SignalType.NONE
@@ -243,64 +355,113 @@ class TrendStrategy:
         if not self.supertrend.initialized:
             return SignalType.NONE
 
-        # Cooldown check
-        if tick < self._cooldown_until_tick:
+        # Cooldown check (timestamp asosida — tick'da emas)
+        if self._is_in_cooldown(now_ts):
+            return SignalType.NONE
+
+        # Trades-per-hour limit (loop-bug guard)
+        if self._is_rate_limited(now_ts):
             return SignalType.NONE
 
         # 1. EMA cross (oxirgi candle'da aniq cross bo'lgan bo'lishi kerak)
         if self._last_cross is None:
             return SignalType.NONE
 
+        # 1a. Stale signal check — cross max_signal_age_bars dan eski emas.
+        # update_indicators recompute qilganda eski cross ham topilishi mumkin,
+        # bu esa noto'g'ri "yangi entry" signaliga olib keladi.
+        age = self._signal_age_bars()
+        if age > self.cfg.max_signal_age_bars:
+            # Eski cross — endi rad etamiz va clear qilamiz, qayta ko'tarilmasin.
+            self._last_cross = None
+            return SignalType.NONE
+
         signal = SignalType.LONG if self._last_cross == "golden_cross" else SignalType.SHORT
 
-        # Clear last_cross so we don't re-enter on same cross
-        # (Will be set again on next real cross)
-        # Note: we don't clear here — robot manages entry state
-        # But to prevent repeated signals, check timestamp freshness
-
-        # 2. ADX filter
-        if self.adx.value < self.cfg.adx_threshold:
+        # 2-4. ADX + Supertrend + HTF filtrlar
+        if not self._check_full_signal_filters(signal):
             return SignalType.NONE
-
-        # 3. Supertrend alignment
-        st_dir = self.supertrend.direction
-        if signal == SignalType.LONG and st_dir != 1:
-            return SignalType.NONE
-        if signal == SignalType.SHORT and st_dir != -1:
-            return SignalType.NONE
-
-        # 4. HTF filter (optional)
-        if self.cfg.use_htf_filter:
-            if self.htf_ema_fast.initialized and self.htf_ema_slow.initialized:
-                htf_fast = self.htf_ema_fast.value
-                htf_slow = self.htf_ema_slow.value
-                if signal == SignalType.LONG and htf_fast < htf_slow:
-                    return SignalType.NONE
-                if signal == SignalType.SHORT and htf_fast > htf_slow:
-                    return SignalType.NONE
 
         return signal
+
+    def detect_opposite_exit(self, current_side: str) -> bool:
+        """
+        Opposite signal exit — ochiq pozitsiyani kuchli teskari signal'da yopish.
+
+        LONG ochiq + death cross + (full filter confirm if enabled) => True (yopish kerak)
+        SHORT ochiq + golden cross + ... => True
+        """
+        if not self.cfg.use_opposite_signal_exit:
+            return False
+        if not self.ema.initialized or self._last_cross is None:
+            return False
+
+        # Cross signal'i juda eski bo'lmasligi kerak
+        if self._signal_age_bars() > self.cfg.max_signal_age_bars:
+            return False
+
+        # Opposite check
+        is_opposite = (
+            (current_side == "long" and self._last_cross == "death_cross")
+            or (current_side == "short" and self._last_cross == "golden_cross")
+        )
+        if not is_opposite:
+            return False
+
+        # Optional: ADX/Supertrend/HTF ham tasdiqlashi shart
+        if self.cfg.opposite_signal_requires_full_confirm:
+            opposite_signal = (
+                SignalType.SHORT if current_side == "long" else SignalType.LONG
+            )
+            if not self._check_full_signal_filters(opposite_signal):
+                return False
+
+        return True
 
     def consume_signal(self) -> None:
         """Signal ishlatilganidan keyin chaqiriladi — takroran trigger bo'lmasin."""
         self._last_cross = None
+        self._last_cross_ts = 0
 
     # ─── POSITION SIZING ────────────────────────────────────────────────────
 
     def calculate_position_size(self, price: float, trade_amount: float,
                                 leverage: int) -> float:
-        """Position size = (trade_amount × leverage) / price."""
+        """
+        Position size hisoblash.
+
+        SEMANTIKA (v2.1 — aniqlashtirilgan):
+        - `trade_amount` = MARGIN to allocate (foydalanuvchi pozitsiyaga ajratayotgan kapital, USDT'da)
+        - `notional` = trade_amount × leverage (real kontrakt qiymati)
+        - `size` = notional / price (qancha unit/kontrakt)
+
+        Misol: trade_amount=$50, leverage=10, AVAX@$9.24
+          notional = $500, size = 54.1 AVAX, fee per side = $0.50
+
+        KRITIK: Robot.py BU funksiyaga `_session_trade_amount` ni uzatadi.
+        Agar u 0 bo'lsa, robot CAPITAL_ENGAGEMENT × balance ishlatadi
+        (entire balance EMAS — bu eski v2.0 bug'i).
+        """
         if price <= 0 or trade_amount <= 0:
             return 0.0
         notional = trade_amount * leverage
         size = notional / price
 
+        # Symbol info'dan precision va min/max chegaralar
         min_lot = 0.001
         max_lot = 10000.0
+        size_precision: Optional[int] = None
         if self._symbol_info:
             try:
-                min_lot = max(min_lot, float(self._symbol_info.get("minTradeNum", 0)))
-                max_lot = min(max_lot, float(self._symbol_info.get("maxTradeNum", max_lot)))
+                min_lot = max(min_lot, float(self._symbol_info.get("minTradeNum", 0) or 0))
+                raw_max = self._symbol_info.get("maxTradeNum", max_lot) or max_lot
+                max_lot = min(max_lot, float(raw_max))
+            except (TypeError, ValueError):
+                pass
+            try:
+                vp = self._symbol_info.get("volumePlace")
+                if vp is not None:
+                    size_precision = int(vp)
             except (TypeError, ValueError):
                 pass
 
@@ -308,12 +469,27 @@ class TrendStrategy:
             return 0.0
         if size > max_lot:
             size = max_lot
-        return money_round(size, 6)
+        # Symbol-specific precision (e.g. BTC=4 decimals, AVAX=1)
+        precision = size_precision if size_precision is not None else 6
+        return money_round(size, precision)
 
     # ─── SL / TP ─────────────────────────────────────────────────────────────
 
     def initial_stop_loss(self, side: str, entry_price: float) -> float:
+        """
+        Initial SL — fixed % VA optionally ATR-based ning eng wide'i.
+
+        v2.0: faqat fixed %.
+        v2.1: agar use_atr_sl=True, SL = max(fixed%, sl_atr_mult * ATR / price * 100)
+        Bu past-vol pair'larda fixed %, yuqori-vol'da ATR'ga moslashadi.
+        """
         sl_pct = self.cfg.initial_sl_percent / 100
+
+        if self.cfg.use_atr_sl and self.atr.initialized and self.atr.value > 0 and entry_price > 0:
+            atr_pct = (self.cfg.sl_atr_multiplier * self.atr.value) / entry_price
+            # Wider'ini olamiz — ya'ni ko'proq nafas oladigan SL
+            sl_pct = max(sl_pct, atr_pct)
+
         if side == "long":
             return entry_price * (1 - sl_pct)
         return entry_price * (1 + sl_pct)
@@ -439,9 +615,50 @@ class TrendStrategy:
         self.position = pos
         return pos
 
-    def set_cooldown(self, current_tick: int) -> None:
-        """SL urilganidan keyin cooldown o'rnatish."""
-        self._cooldown_until_tick = current_tick + self.cfg.cooldown_bars_after_sl
+    def set_cooldown(self, _current_tick: int = 0, now_ts: Optional[float] = None) -> None:
+        """
+        SL urilganidan keyin cooldown o'rnatish.
+
+        v2.0: tick'da bo'lgan (1s × 5 = 5 sek — juda qisqa).
+        v2.1: candle bar'da. cooldown_bars_after_sl × timeframe_seconds = haqiqiy vaqt.
+        """
+        now = now_ts if now_ts is not None else time.time()
+        bar_seconds = timeframe_to_seconds(self.cfg.timeframe)
+        cooldown_seconds = self.cfg.cooldown_bars_after_sl * bar_seconds
+        self._cooldown_until_ts = now + cooldown_seconds
+
+    def cooldown_remaining_seconds(self, now_ts: Optional[float] = None) -> float:
+        """Diagnostika uchun — cooldown yana qancha?"""
+        if self._cooldown_until_ts <= 0:
+            return 0.0
+        now = now_ts if now_ts is not None else time.time()
+        return max(0.0, self._cooldown_until_ts - now)
+
+    # ─── FEE-AWARE EXIT ──────────────────────────────────────────────────────
+
+    def estimated_round_trip_fee(self, position: Position, exit_price: float) -> float:
+        """Pozitsiya uchun open+close fee taxminiy hisobi (Taker rate)."""
+        rate = self.config.risk.TAKER_FEE_RATE
+        entry_fee = position.entry_price * position.size * rate
+        exit_fee = exit_price * position.size * rate
+        return entry_fee + exit_fee
+
+    def voluntary_exit_allowed(self, position: Position, exit_price: float) -> bool:
+        """
+        Voluntary exit (trailing/opposite/exhaustion) faqat gross profit
+        fee'larni qoplagandagina ruxsat etiladi.
+
+        SL va MAX_AGE bunga taalluqli emas — ularni majburan yopish kerak.
+
+        factor=1.0 (default): gross >= round-trip fee (net >= 0)
+        factor=2.0: gross >= 2× fee (net >= fee — yaxshi buffer)
+        """
+        factor = self.cfg.min_net_profit_fee_factor
+        if factor <= 0:
+            return True  # Disabled — har qanday voluntary exit ruxsat
+        gross = position.pnl_at(exit_price)
+        fees = self.estimated_round_trip_fee(position, exit_price)
+        return gross >= factor * fees
 
     # ─── RISK ────────────────────────────────────────────────────────────────
 
@@ -481,13 +698,41 @@ class TrendStrategy:
 
     # ─── STATS ───────────────────────────────────────────────────────────────
 
-    def on_trade_closed(self, net_pnl: float) -> None:
+    def register_entry(self, now_ts: Optional[float] = None) -> None:
+        """Yangi entry ochilganda — trades-per-hour rolling window'ga qo'shamiz."""
+        now = now_ts if now_ts is not None else time.time()
+        self._recent_trade_ts.append(now)
+        # Ortiqcha eski entry'larni tozalash
+        cutoff = now - 3600
+        self._recent_trade_ts = [t for t in self._recent_trade_ts if t >= cutoff]
+
+    def on_trade_closed(self, net_pnl: float, now_ts: Optional[float] = None) -> None:
         self.total_trades += 1
         self.realized_pnl += net_pnl
         if net_pnl > 0:
             self.winning_trades += 1
+            self._consecutive_losses = 0  # streak reset
         elif net_pnl < 0:
             self.losing_trades += 1
+            self._consecutive_losses += 1
+            # Consecutive loss streak — qo'shimcha cooldown
+            if (
+                self.cfg.consecutive_losses_threshold > 0
+                and self._consecutive_losses >= self.cfg.consecutive_losses_threshold
+            ):
+                now = now_ts if now_ts is not None else time.time()
+                bar_seconds = timeframe_to_seconds(self.cfg.timeframe)
+                cooldown_seconds = (
+                    self.cfg.consecutive_losses_cooldown_bars * bar_seconds
+                )
+                self._streak_cooldown_until_ts = now + cooldown_seconds
+                logger.warning(
+                    f"[CONSECUTIVE_LOSSES] {self._consecutive_losses} ta zarara "
+                    f"trade qatoriy → {self.cfg.consecutive_losses_cooldown_bars} bar "
+                    f"({cooldown_seconds}s) cooldown qo'yildi"
+                )
+                # Streakni reset qilamiz (cooldown'dan keyin yangi sanovdan boshlanadi)
+                self._consecutive_losses = 0
         self.increment_today_trades()
 
     def winrate(self) -> float:
@@ -500,12 +745,18 @@ class TrendStrategy:
             "ema_slow": self.ema.slow_value,
             "atr": self.atr.value,
             "adx": self.adx.value,
+            "chop": self.chop.value,
+            "chop_is_trending": self.chop.is_trending(self.cfg.chop_max_for_entry),
             "supertrend_value": self.supertrend.value,
             "supertrend_direction": self.supertrend.direction,
             "htf_ema_fast": self.htf_ema_fast.value,
             "htf_ema_slow": self.htf_ema_slow.value,
             "position": self.position.to_dict() if self.position else None,
             "last_cross": self._last_cross,
+            "signal_age_bars": self._signal_age_bars(),
+            "cooldown_remaining_seconds": self.cooldown_remaining_seconds(),
+            "trades_last_hour": len(self._recent_trade_ts),
+            "consecutive_losses": self._consecutive_losses,
         }
 
     def get_stats(self) -> Dict:
@@ -529,6 +780,12 @@ class TrendStrategy:
         self.realized_pnl = 0.0
         self.today_trades = 0
         self._stopped = False
+        self._cooldown_until_ts = 0.0
+        self._streak_cooldown_until_ts = 0.0
+        self._consecutive_losses = 0
+        self._last_cross = None
+        self._last_cross_ts = 0
+        self._recent_trade_ts = []
 
 
 # Backward compatibility

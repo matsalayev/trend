@@ -135,10 +135,30 @@ class TrendConfig:
     ema_fast: int = 9
     ema_slow: int = 21
 
+    # Cross signal stale check — EMA cross signal'i bitta candle'dan eski
+    # bo'lmasa qabul qilinadi. Eski cross'lar (re-init paytida history'dan
+    # topilgan) noto'g'ri "ushlangan" bo'lishi mumkin, shuning uchun
+    # max_signal_age_bars dan ortiq cross'lar rad etiladi.
+    max_signal_age_bars: int = 3
+
     # ── Volatility / trend strength ────────────────────────────────────────
     atr_period: int = 14
     adx_period: int = 14
     adx_threshold: float = 25.0
+
+    # ── Choppiness Index filter (v2.1) ─────────────────────────────────────
+    # CHOP < 38.2 => kuchli trend (entry uchun yaxshi)
+    # CHOP > 61.8 => choppy/sideways (entry'dan saqlanish)
+    # Bu filter trend strategiyaning eng katta zaifligini hal qiladi:
+    # choppy market'da false signal'lar SL'da yopilib bot zarara qiladi.
+    use_choppiness_filter: bool = True
+    chop_period: int = 14
+    chop_max_for_entry: float = 50.0  # CHOP > shu qiymat bo'lsa entry rad etiladi
+
+    # Pair-level "consecutive losses" cooldown (loop guard)
+    # Agar oxirgi N ta trade ketma-ket SL'da yopilgan bo'lsa, qo'shimcha cooldown
+    consecutive_losses_threshold: int = 3
+    consecutive_losses_cooldown_bars: int = 20  # 5 candle SL cooldown'dan tashqari
 
     # ── Supertrend ─────────────────────────────────────────────────────────
     supertrend_period: int = 10
@@ -151,6 +171,11 @@ class TrendConfig:
 
     # ── Stop loss / trailing ───────────────────────────────────────────────
     initial_sl_percent: float = 3.0
+    # ATR-based SL: agar yoqilgan bo'lsa, SL = max(fixed_sl%, atr_multiplier*ATR)
+    # Bu past-volatility pair'larda tighter SL beradi, yuqori-volatility'da wider.
+    use_atr_sl: bool = True
+    sl_atr_multiplier: float = 2.0
+
     trailing_activation_percent: float = 1.0
     trailing_atr_multiplier: float = 1.5
 
@@ -161,9 +186,30 @@ class TrendConfig:
     partial_tp2_percent: float = 5.0
     partial_tp2_size_pct: float = 0.33
 
+    # ── Opposite signal close ──────────────────────────────────────────────
+    # CLAUDE.md: "Opposite signal: EMA death cross exits LONG"
+    # Hozir kod'da yo'q. Yoqilsa: LONG ochiq + death cross => yopiladi
+    # (cooldown bilan, false signal'larni filter qilish uchun).
+    use_opposite_signal_exit: bool = True
+    # Opposite signal triggerga ishonch uchun ADX/Supertrend ham tasdiqlashi
+    # kerak (oddiy EMA cross emas, to'liq signal).
+    opposite_signal_requires_full_confirm: bool = True
+
+    # ── Fee-aware exit ─────────────────────────────────────────────────────
+    # Voluntary exit (trailing/opposite/exhaustion) faqat net profit kamida
+    # min_net_profit_fee_factor × estimated_fees bo'lganda amalga oshiriladi.
+    # SL/MAX_AGE bunga taalluqli emas (ularni bypass qilolmaymiz).
+    min_net_profit_fee_factor: float = 1.0
+
     # ── Risk / cooldown ────────────────────────────────────────────────────
     max_drawdown_percent: float = 20.0
+    # Cooldown after SL — CANDLE BAR'larda (sekund yoki tick'da emas).
+    # Robot timestamp asosida candle bar'ga aylantiradi.
     cooldown_bars_after_sl: int = 5
+
+    # Trades-per-hour limit — fee-bleed loop himoyasi.
+    # 0 = limit yo'q. 4 = soatiga maksimum 4 ta trade (15m candle, 1 per candle).
+    max_trades_per_hour: int = 4
 
     @classmethod
     def from_env(cls) -> "TrendConfig":
@@ -172,15 +218,23 @@ class TrendConfig:
             htf_timeframe=_get_env("HTF_TIMEFRAME", "4H"),
             ema_fast=_get_env_int("EMA_FAST", 9),
             ema_slow=_get_env_int("EMA_SLOW", 21),
+            max_signal_age_bars=_get_env_int("MAX_SIGNAL_AGE_BARS", 3),
             atr_period=_get_env_int("ATR_PERIOD", 14),
             adx_period=_get_env_int("ADX_PERIOD", 14),
             adx_threshold=_get_env_float("ADX_THRESHOLD", 25.0),
+            use_choppiness_filter=_get_env_bool("USE_CHOPPINESS_FILTER", True),
+            chop_period=_get_env_int("CHOP_PERIOD", 14),
+            chop_max_for_entry=_get_env_float("CHOP_MAX_FOR_ENTRY", 50.0),
+            consecutive_losses_threshold=_get_env_int("CONSECUTIVE_LOSSES_THRESHOLD", 3),
+            consecutive_losses_cooldown_bars=_get_env_int("CONSECUTIVE_LOSSES_COOLDOWN_BARS", 20),
             supertrend_period=_get_env_int("SUPERTREND_PERIOD", 10),
             supertrend_multiplier=_get_env_float("SUPERTREND_MULTIPLIER", 3.0),
             use_htf_filter=_get_env_bool("USE_HTF_FILTER", True),
             htf_ema_fast=_get_env_int("HTF_EMA_FAST", 21),
             htf_ema_slow=_get_env_int("HTF_EMA_SLOW", 50),
             initial_sl_percent=_get_env_float("INITIAL_SL_PERCENT", 3.0),
+            use_atr_sl=_get_env_bool("USE_ATR_SL", True),
+            sl_atr_multiplier=_get_env_float("SL_ATR_MULTIPLIER", 2.0),
             trailing_activation_percent=_get_env_float("TRAILING_ACTIVATION_PERCENT", 1.0),
             trailing_atr_multiplier=_get_env_float("TRAILING_ATR_MULTIPLIER", 1.5),
             use_partial_tp=_get_env_bool("USE_PARTIAL_TP", True),
@@ -188,8 +242,14 @@ class TrendConfig:
             partial_tp1_size_pct=_get_env_float("PARTIAL_TP1_SIZE_PCT", 0.33),
             partial_tp2_percent=_get_env_float("PARTIAL_TP2_PERCENT", 5.0),
             partial_tp2_size_pct=_get_env_float("PARTIAL_TP2_SIZE_PCT", 0.33),
+            use_opposite_signal_exit=_get_env_bool("USE_OPPOSITE_SIGNAL_EXIT", True),
+            opposite_signal_requires_full_confirm=_get_env_bool(
+                "OPPOSITE_SIGNAL_REQUIRES_FULL_CONFIRM", True
+            ),
+            min_net_profit_fee_factor=_get_env_float("MIN_NET_PROFIT_FEE_FACTOR", 1.0),
             max_drawdown_percent=_get_env_float("MAX_DRAWDOWN_PERCENT", 20.0),
             cooldown_bars_after_sl=_get_env_int("COOLDOWN_BARS_AFTER_SL", 5),
+            max_trades_per_hour=_get_env_int("MAX_TRADES_PER_HOUR", 4),
         )
 
 
@@ -268,6 +328,10 @@ def validate_trading_settings(settings: dict) -> Optional[str]:
         ("partialTp2SizePct", 0, 1, "float"),
         ("maxDrawdownPercent", 0, 100, "float"),
         ("cooldownBarsAfterSl", 0, 1000, "int"),
+        ("maxSignalAgeBars", 1, 100, "int"),
+        ("slAtrMultiplier", 0.1, 10, "float"),
+        ("minNetProfitFeeFactor", 0, 100, "float"),
+        ("maxTradesPerHour", 0, 60, "int"),
     ]
     for name, mn, mx, vt in checks:
         if name in settings:
@@ -290,9 +354,15 @@ def validate_trading_settings(settings: dict) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+# v2.1 v2 walk-forward audit (2026-05-04): faqat 3 pair test'da profitable.
+# Frequency-aware optimization (ADX 30-33, CHOP 50-65, SL atr 1.0, Trail atr 2.5):
+#   ETHUSDT:  12 test trades, +$56.51 (+5.65%), 83% WR
+#   AVAXUSDT: 10 test trades, +$209.83 (+20.98%), 90% WR
+#   DOGEUSDT:  8 test trades, +$74.98 (+7.50%), 87.5% WR
+# Jami: 30 trade / 60 kun = 0.5 trade/kun (maqsad), +$341 = +11.38% / 60 kun = +69.21% APR
+# Drop pair'lar (test'da yo'qotgan yoki frequency past): BTC, SOL, BNB, XRP, ADA, LINK
 SUPPORTED_PAIRS: List[str] = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "DOGEUSDT", "LINKUSDT", "AVAXUSDT", "ADAUSDT",
+    "ETHUSDT", "AVAXUSDT", "DOGEUSDT",
 ]
 
 
@@ -413,7 +483,9 @@ def apply_preset_to_config(
     for key in (
         "ema_fast", "ema_slow", "atr_period", "adx_period",
         "supertrend_period", "htf_ema_fast", "htf_ema_slow",
-        "cooldown_bars_after_sl",
+        "cooldown_bars_after_sl", "max_signal_age_bars",
+        "max_trades_per_hour", "chop_period",
+        "consecutive_losses_threshold", "consecutive_losses_cooldown_bars",
     ):
         if key in merged:
             setattr(t, key, int(merged[key]))
@@ -421,14 +493,20 @@ def apply_preset_to_config(
     for key in (
         "adx_threshold", "supertrend_multiplier", "trailing_atr_multiplier",
         "trailing_activation_percent", "initial_sl_percent",
+        "sl_atr_multiplier",
         "partial_tp1_percent", "partial_tp1_size_pct",
         "partial_tp2_percent", "partial_tp2_size_pct",
-        "max_drawdown_percent",
+        "max_drawdown_percent", "min_net_profit_fee_factor",
+        "chop_max_for_entry",
     ):
         if key in merged:
             setattr(t, key, float(merged[key]))
 
-    for key in ("use_htf_filter", "use_partial_tp"):
+    for key in (
+        "use_htf_filter", "use_partial_tp", "use_atr_sl",
+        "use_opposite_signal_exit", "opposite_signal_requires_full_confirm",
+        "use_choppiness_filter",
+    ):
         if key in merged:
             setattr(t, key, bool(merged[key]))
 
