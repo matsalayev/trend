@@ -73,67 +73,79 @@ def _fetch_bitget_candles(
 ) -> List[Candle]:
     """
     Bitget public market endpoint — 1000 candles max per request.
-    Loop orqali butun oraliqni oladi.
+    Avval `mix/market/candles` (yangi data), keyin `history-candles` (eski) try qiladi.
     """
     granularity = GRANULARITY_MAP[timeframe]
     step_ms = TIMEFRAME_MS[timeframe]
-    max_per_req = 1000
 
     all_candles: List[Candle] = []
-    current = start_ms
 
-    while current < end_ms:
-        batch_end = min(current + step_ms * max_per_req, end_ms)
+    # Ikki endpoint try qilamiz: avval recent (limit 1000), keyin history (limit 200)
+    endpoints = [
+        ("https://api.bitget.com/api/v2/mix/market/candles", 1000),
+        ("https://api.bitget.com/api/v2/mix/market/history-candles", 200),
+    ]
 
-        url = "https://api.bitget.com/api/v2/mix/market/candles"
-        params = {
-            "symbol": symbol,
-            "productType": product_type,
-            "granularity": granularity,
-            "startTime": str(current),
-            "endTime": str(batch_end),
-            "limit": str(max_per_req),
-        }
+    for url, max_per_req in endpoints:
+        current = start_ms
+        endpoint_candles: List[Candle] = []
+        empty_in_a_row = 0
 
-        try:
-            r = requests.get(url, params=params, timeout=15)
-            if r.status_code == 400:
-                # Pair mavjud emas yoki noto'g'ri parametr — darhol to'xtash
-                logger.warning(f"Bitget 400 for {symbol} — pair topilmadi yoki qo'llab-quvvatlanmaydi")
-                return []
-            r.raise_for_status()
-            data = r.json()
-            if data.get("code") != "00000":
-                logger.error(f"Bitget xato: {data}")
-                break
+        while current < end_ms:
+            batch_end = min(current + step_ms * max_per_req, end_ms)
+            params = {
+                "symbol": symbol,
+                "productType": product_type,
+                "granularity": granularity,
+                "startTime": str(current),
+                "endTime": str(batch_end),
+                "limit": str(max_per_req),
+            }
+            try:
+                r = requests.get(url, params=params, timeout=15)
+                if r.status_code == 400:
+                    logger.debug(f"Bitget 400 for {symbol} ({url}) — keyingi endpoint sinab ko'ramiz")
+                    break  # bu endpoint ishlamadi, history-candles'ga o'tamiz
+                r.raise_for_status()
+                data = r.json()
+                if data.get("code") != "00000":
+                    logger.error(f"Bitget xato ({url}): {data}")
+                    break
+                raw = data.get("data", [])
+                if not raw:
+                    empty_in_a_row += 1
+                    if empty_in_a_row >= 3:
+                        # Bu endpoint shu davr uchun ma'lumot bera olmadi
+                        break
+                    current = batch_end
+                    time.sleep(0.05)
+                    continue
+                empty_in_a_row = 0
+                for item in raw:
+                    ts = int(item[0])
+                    endpoint_candles.append(Candle(
+                        timestamp=ts,
+                        open=float(item[1]),
+                        high=float(item[2]),
+                        low=float(item[3]),
+                        close=float(item[4]),
+                        volume=float(item[5]) if len(item) > 5 else 0.0,
+                    ))
+                last_ts = int(raw[-1][0])
+                if last_ts <= current:
+                    break
+                current = last_ts + step_ms
+                time.sleep(0.1)
+            except requests.RequestException as e:
+                logger.error(f"Request xato: {e}")
+                time.sleep(2)
+                continue
 
-            raw = data.get("data", [])
-            if not raw:
-                logger.debug(f"Bo'sh javob, oraliq tugagan {current}..{batch_end}")
-                break
-
-            for item in raw:
-                ts = int(item[0])
-                all_candles.append(Candle(
-                    timestamp=ts,
-                    open=float(item[1]),
-                    high=float(item[2]),
-                    low=float(item[3]),
-                    close=float(item[4]),
-                    volume=float(item[5]) if len(item) > 5 else 0.0,
-                ))
-
-            # Next batch
-            last_ts = int(raw[-1][0])
-            if last_ts <= current:
-                break
-            current = last_ts + step_ms
-            time.sleep(0.1)  # rate limit
-
-        except requests.RequestException as e:
-            logger.error(f"Request xato: {e}")
-            time.sleep(2)
-            continue
+        all_candles.extend(endpoint_candles)
+        # Agar yetarli ma'lumot olingan bo'lsa (90% qoplagan) — keyingi endpoint kerak emas
+        expected_bars = (end_ms - start_ms) // step_ms
+        if expected_bars > 0 and len(endpoint_candles) >= expected_bars * 0.9:
+            break
 
     # Sort + deduplicate
     seen = set()

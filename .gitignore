@@ -80,3 +80,13 @@ logs/
 # Local development
 .DS_Store
 Thumbs.db
+
+# Backtest cache (regenerate from API)
+backtest/cache/
+
+# Walk-forward intermediate results
+backtest/walk_forward_results.json
+backtest/walk_forward_v2_results.json
+
+# Preset backups
+trend_robot/presets.json.*_backup
