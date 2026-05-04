@@ -362,7 +362,15 @@ def validate_trading_settings(settings: dict) -> Optional[str]:
 # Jami: 30 trade / 60 kun = 0.5 trade/kun (maqsad), +$341 = +11.38% / 60 kun = +69.21% APR
 # Drop pair'lar (test'da yo'qotgan yoki frequency past): BTC, SOL, BNB, XRP, ADA, LINK
 SUPPORTED_PAIRS: List[str] = [
-    "ETHUSDT", "AVAXUSDT", "DOGEUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "AVAXUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "LINKUSDT",
 ]
 
 
