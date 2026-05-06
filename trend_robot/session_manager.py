@@ -352,22 +352,57 @@ class TrendRobotWithWebhook(TrendRobot):
                 pass
 
     async def _check_allocated_loss_limit(self) -> bool:
-        """Agar ochiq pozitsiya unrealized zarari >= allocated amount bo'lsa:
-        pozitsiyani yopish + trade_closed webhook + botni ERROR holatiga o'tkazish."""
+        """HEMA-CONTRACT B4+R2: net unrealized (fee-aware) zarar tekshiriladi.
+        Layer 2: 25% catastrophic DD → emergency close.
+        Layer 1: 100% allocated loss → emergency close."""
         trade_amount = getattr(self, "_session_trade_amount", 0) or 0
         if trade_amount <= 0 or not self.strategy or not self.strategy.position:
             return False
         pos = self.strategy.position
         unrealized = pos.pnl_at(self.current_price)
-        if unrealized >= 0:
+        # HEMA-CONTRACT B4: NET unrealized (fee-aware), not gross
+        entry_fee = getattr(pos, "entry_fee", 0.0) or 0.0
+        exit_fee = self.current_price * pos.size * self.config.risk.TAKER_FEE_RATE
+        net_unrealized = unrealized - entry_fee - exit_fee
+        if net_unrealized >= 0:
             return False
-        loss = -unrealized
+
+        loss = -net_unrealized
+
+        # HEMA-CONTRACT R2: Layer 2 — 25% catastrophic DD (fires BEFORE 100%)
+        catastrophic_dd_pct = (loss / trade_amount * 100) if trade_amount > 0 else 0
+        if 25.0 <= catastrophic_dd_pct < 100.0:
+            logger.critical(
+                f"[CATASTROPHIC_DD] loss={catastrophic_dd_pct:.1f}% of allocated "
+                f"(net=${loss:.2f}, fees=${entry_fee + exit_fee:.2f}) — emergency close"
+            )
+            try:
+                await self._close_position(pos, self.current_price, "CATASTROPHIC_DD")
+            except Exception as e:
+                logger.error(f"CATASTROPHIC_DD close xato: {e}")
+            if self._webhook:
+                try:
+                    await self._webhook.send_status_changed(
+                        user_bot_id=self._session.user_bot_id,
+                        status="error",
+                        message=f"catastrophic_dd: {catastrophic_dd_pct:.1f}% of allocated",
+                    )
+                except Exception:
+                    pass
+            try:
+                self.state = RobotState.ERROR
+                self._running = False
+            except Exception:
+                pass
+            return True
+
+        # Layer 1: full allocated loss
         if loss < trade_amount:
             return False
 
         logger.warning(
-            f"[ALLOCATED LOSS STOP] loss=${loss:.2f} >= allocated=${trade_amount:.2f} — "
-            f"closing {pos.side} + stopping bot"
+            f"[ALLOCATED LOSS STOP] net_loss=${loss:.2f} >= allocated=${trade_amount:.2f} "
+            f"(fees=${entry_fee + exit_fee:.2f}) — closing {pos.side} + stopping bot"
         )
         try:
             await self._close_position(pos, self.current_price, "ALLOCATED_LOSS")
