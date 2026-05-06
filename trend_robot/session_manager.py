@@ -70,7 +70,9 @@ class UserSession:
     api_key: str = ""
     api_secret: str = ""
     passphrase: str = ""
-    is_demo: bool = True
+    # Production-safe default; demo must be opt-in. Aligned with TREND-#13
+    # register_user fix and fleet-wide is_demo audit.
+    is_demo: bool = False
 
     # Trading sozlamalari
     trading_pair: str = "BTCUSDT"
