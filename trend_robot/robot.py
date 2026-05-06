@@ -578,17 +578,30 @@ class TrendRobot:
     # ─── CLOSE ───────────────────────────────────────────────────────────────
 
     async def _close_position(self, pos: Position, exit_price: float, reason: str) -> None:
+        symbol = self.config.trading.SYMBOL
+        # HEMA-CONTRACT S3+R3: phantom flag for subclass webhook reason override
+        self._last_close_was_phantom = False
         try:
             if pos.side == "long":
-                await self.client.close_long(
-                    symbol=self.config.trading.SYMBOL, size=pos.size,
-                )
+                await self.client.close_long(symbol=symbol, size=pos.size)
             else:
-                await self.client.close_short(
-                    symbol=self.config.trading.SYMBOL, size=pos.size,
-                )
+                await self.client.close_short(symbol=symbol, size=pos.size)
         except BitgetAPIError as e:
-            if "22002" not in str(e) and "no position" not in str(e).lower():
+            err_str = str(e)
+            if "22002" in err_str or "no position" in err_str.lower():
+                # HEMA-CONTRACT S3+R3: phantom 22002 — clean orphan plan orders
+                # so leftover TP/SL triggers don't fire on next entry.
+                self._last_close_was_phantom = True
+                logger.warning(
+                    f"[22002] Phantom close {pos.side}: position already closed. "
+                    f"Cancelling orphan orders for {symbol}"
+                )
+                try:
+                    await self.client.cancel_all_orders(symbol)
+                    await self.client.cancel_all_plan_orders(symbol)
+                except Exception as cancel_err:
+                    logger.warning(f"Phantom orphan cancel xato: {cancel_err}")
+            else:
                 logger.error(f"Close {pos.side} xato: {e}")
 
         # Calculate net PnL

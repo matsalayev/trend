@@ -853,6 +853,24 @@ class BitgetClient:
         }
         return await self.post("/api/v2/mix/order/cancel-all-orders", body)
 
+    async def cancel_all_plan_orders(self, symbol: str,
+                                      product_type: str = "USDT-FUTURES") -> Dict:
+        """Barcha plan orderlarni (TP/SL trigger) bekor qilish.
+        HEMA-CONTRACT R3: phantom 22002 yoki external close'dan keyin orphan
+        plan orderlarni tozalash.
+        """
+        body = {
+            "symbol": symbol,
+            "productType": product_type,
+        }
+        try:
+            return await self.post("/api/v2/mix/order/cancel-plan-order", body)
+        except Exception as e:
+            err = str(e).lower()
+            if "no plan order" in err or "40109" in err or "22001" in err:
+                return {}
+            raise
+
     # ─────────────────────────────────────────────────────────────────────────
     #                           SHORTCUT METHODS
     # ─────────────────────────────────────────────────────────────────────────

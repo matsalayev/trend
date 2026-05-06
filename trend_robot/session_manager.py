@@ -311,13 +311,21 @@ class TrendRobotWithWebhook(TrendRobot):
         return opened  # TREND-#5: return parent's bool for register_entry() chain
 
     async def _close_position(self, pos, exit_price: float, reason: str) -> None:
-        """v2.0: delegate to parent close, then emit trade_closed webhook."""
+        """v2.0: delegate to parent close, then emit trade_closed webhook.
+
+        HEMA-CONTRACT S3+W2: reason override to PHANTOM_CLOSE if parent's
+        22002 detection triggered (`_last_close_was_phantom` flag).
+        """
         # Snapshot before parent nulls out strategy.position
         entry = getattr(pos, "entry_price", 0) or 0
         size = getattr(pos, "size", 0) or 0
         side = getattr(pos, "side", "long")
 
         await super()._close_position(pos, exit_price, reason)
+
+        # Override reason if phantom detected (canonical enum from contract §4.4)
+        if getattr(self, "_last_close_was_phantom", False):
+            reason = "PHANTOM_CLOSE"
 
         # Allow webhook during RUNNING + STOPPING (graceful shutdown with position)
         if self._webhook and entry > 0 and size > 0 and self.state in (RobotState.RUNNING, RobotState.STOPPING):
@@ -432,6 +440,16 @@ class TrendRobotWithWebhook(TrendRobot):
                 else:
                     pnl = (prev_pos.entry_price - self.current_price) * prev_pos.size
 
+                # HEMA-CONTRACT §4.4: canonical reason. Position vanished
+                # between ticks → exchange-side TP/SL fired or external close.
+                # Choose by PnL sign as best-effort (no way to know for sure
+                # without comparing to actual TP/SL prices).
+                if pnl > 0:
+                    canonical_reason = "TP_HIT"
+                elif pnl < 0:
+                    canonical_reason = "SL_HIT"
+                else:
+                    canonical_reason = "EXTERNAL_CLOSE"
                 await self._webhook.send_trade_closed(
                     user_bot_id=self._session.user_bot_id,
                     symbol=self.config.trading.SYMBOL,
@@ -440,7 +458,7 @@ class TrendRobotWithWebhook(TrendRobot):
                     exit_price=self.current_price,
                     quantity=prev_pos.size,
                     pnl=pnl,
-                    reason="SIGNAL",
+                    reason=canonical_reason,
                 )
                 logger.info(f"trade_closed webhook: {side} pnl=${pnl:.4f}")
 

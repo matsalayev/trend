@@ -12,6 +12,7 @@ Backend tanlash:
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
@@ -74,12 +75,24 @@ class StatePersistence:
         self.state_file = self.state_dir / f"{user_id}_{symbol}.json"
         self._enabled = True
 
-        # Papkani yaratish (graceful handling for permission errors)
+        # HEMA-CONTRACT P4: PermissionError'da /tmp/state ga fallback (default
+        # papkani yaratib bo'lmasa). Bu Docker container'larda ko'p uchraydi —
+        # /data/state read-only bo'lsa ham /tmp har doim writable.
         try:
             self.state_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"State persistence: {self.state_dir.absolute()} (writable)")
         except PermissionError:
-            logger.warning(f"Cannot create state directory {state_dir}, state persistence disabled")
-            self._enabled = False
+            fallback = Path("/tmp/state")
+            try:
+                fallback.mkdir(parents=True, exist_ok=True)
+                self.state_dir = fallback
+                self.state_file = fallback / f"{user_id}_{symbol}.json"
+                logger.warning(
+                    f"PermissionError on {state_dir} — fell back to {fallback.absolute()}"
+                )
+            except Exception as e:
+                logger.error(f"State persistence DISABLED: cannot create {state_dir} or /tmp/state: {e}")
+                self._enabled = False
         except Exception as e:
             logger.warning(f"Failed to create state directory: {e}, state persistence disabled")
             self._enabled = False
@@ -253,11 +266,31 @@ class StatePersistence:
         return {"positions": [], "stats": {}}
 
     def _save_state(self, state: Dict[str, Any]):
-        """State faylni yozish"""
-        self.state_file.write_text(
-            json.dumps(state, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-        )
+        """State faylni atomik yozish (HEMA-CONTRACT P3): temp file + os.replace.
+        Crash mid-write korruptsiyani oldini oladi.
+        """
+        data = json.dumps(state, indent=2, ensure_ascii=False)
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self.state_dir),
+                prefix=".state_",
+                suffix=".tmp",
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            # Atomic on POSIX; on Windows os.replace is also atomic.
+            os.replace(tmp_path, str(self.state_file))
+        except Exception:
+            # Fallback: direct write (last resort)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+            self.state_file.write_text(data, encoding="utf-8")
 
     def close(self):
         """Resurslarni tozalash (file backend uchun hech narsa qilmaydi)"""
