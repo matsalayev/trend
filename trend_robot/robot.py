@@ -543,15 +543,16 @@ class TrendRobot:
                 sl_distance = self.current_price * self.config.exit.SL_PERCENT / 100
                 exchange_sl = self.current_price + sl_distance
 
+            symbol = self.config.trading.SYMBOL
             if side == "long":
                 result = await self.client.open_long(
-                    symbol=self.config.trading.SYMBOL, size=size,
+                    symbol=symbol, size=size,
                     margin_mode=self.config.trading.MARGIN_MODE,
                     sl_price=exchange_sl,  # TREND-#1: exchange-side SL
                 )
             else:
                 result = await self.client.open_short(
-                    symbol=self.config.trading.SYMBOL, size=size,
+                    symbol=symbol, size=size,
                     margin_mode=self.config.trading.MARGIN_MODE,
                     sl_price=exchange_sl,  # TREND-#1: exchange-side SL
                 )
@@ -559,13 +560,44 @@ class TrendRobot:
             order_id = (result.get("orderId", str(int(time.time() * 1000)))
                        if result else str(int(time.time() * 1000)))
 
-            # Create strategy position
+            # HEMA-CONTRACT S1+W1: VERIFY position appeared on Bitget BEFORE
+            # saving local state. A1 — no fake open.
+            verified = False
+            actual_entry = self.current_price
+            for attempt_delay in (0.5, 1.0, 1.5):
+                await asyncio.sleep(attempt_delay)
+                try:
+                    positions = await self.client.get_positions(symbol)
+                    target_side = "long" if side == "long" else "short"
+                    active = [
+                        p for p in (positions or [])
+                        if getattr(p, "side", "") == target_side
+                        and float(getattr(p, "size", 0) or 0) > 0
+                    ]
+                    if active:
+                        verified = True
+                        ent = float(getattr(active[0], "entry_price", 0) or 0)
+                        if ent > 0:
+                            actual_entry = ent
+                        break
+                except Exception as e:
+                    logger.debug(f"Open verify fetch xato: {e}")
+
+            if not verified:
+                logger.error(
+                    f"[OPEN_VERIFY_FAIL] {side.upper()} order placed but no "
+                    f"position appeared on Bitget after 3 retries. order_id={order_id}. "
+                    f"Skipping local state (no fake trade)."
+                )
+                return False
+
+            # Create strategy position with VERIFIED entry price
             pos = self.strategy.create_position(
-                side=side, entry_price=self.current_price,
+                side=side, entry_price=actual_entry,
                 size=size, order_id=order_id,
             )
             logger.info(
-                f"OPEN {side.upper()}: {size:.6f} @ ${self.current_price:.4f} "
+                f"OPEN {side.upper()} [VERIFIED]: {size:.6f} @ ${actual_entry:.4f} "
                 f"(SL exchange: ${exchange_sl:.4f}, local: ${pos.stop_price:.4f}) — "
                 f"ADX={self.strategy.adx.value:.1f} ST={self.strategy.supertrend.direction}"
             )
@@ -581,6 +613,8 @@ class TrendRobot:
         symbol = self.config.trading.SYMBOL
         # HEMA-CONTRACT S3+R3: phantom flag for subclass webhook reason override
         self._last_close_was_phantom = False
+        # HEMA-CONTRACT S3+W2: verify outcome flag (False = don't emit trade_closed)
+        self._last_close_verified = False
         try:
             if pos.side == "long":
                 await self.client.close_long(symbol=symbol, size=pos.size)
@@ -592,6 +626,7 @@ class TrendRobot:
                 # HEMA-CONTRACT S3+R3: phantom 22002 — clean orphan plan orders
                 # so leftover TP/SL triggers don't fire on next entry.
                 self._last_close_was_phantom = True
+                self._last_close_verified = True  # phantom = effectively closed
                 logger.warning(
                     f"[22002] Phantom close {pos.side}: position already closed. "
                     f"Cancelling orphan orders for {symbol}"
@@ -603,6 +638,31 @@ class TrendRobot:
                     logger.warning(f"Phantom orphan cancel xato: {cancel_err}")
             else:
                 logger.error(f"Close {pos.side} xato: {e}")
+
+        # HEMA-CONTRACT S3+W2: VERIFY position actually closed on Bitget.
+        # 4 retries: 0.5s, 1s, 2s, 4s. Filter zero-size before deciding.
+        if not self._last_close_was_phantom:
+            for attempt_delay in (0.5, 1.0, 2.0, 4.0):
+                await asyncio.sleep(attempt_delay)
+                try:
+                    positions = await self.client.get_positions(symbol)
+                    active = [
+                        p for p in (positions or [])
+                        if getattr(p, "side", "") == pos.side
+                        and float(getattr(p, "size", 0) or 0) > 0
+                    ]
+                    if not active:
+                        self._last_close_verified = True
+                        break
+                except Exception as e:
+                    logger.debug(f"Close verify fetch xato: {e}")
+            if not self._last_close_verified:
+                logger.critical(
+                    f"[CLOSE_VERIFY_FAIL] {pos.side.upper()} close attempted but "
+                    f"position still on Bitget after 4 retries (7.5s). "
+                    f"NOT marking closed — HEMA stays OPEN, next sync will retry."
+                )
+                return  # don't update strategy / no webhook
 
         # Calculate net PnL
         gross = pos.pnl_at(exit_price)

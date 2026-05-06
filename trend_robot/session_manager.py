@@ -173,19 +173,65 @@ class TrendRobotWithWebhook(TrendRobot):
         """
         await super().initialize()
 
+        # HEMA-CONTRACT P5: 4-quadrant reconciliation matrix
+        exchange_positions = []
+        if self.client:
+            try:
+                exchange_positions = await self.client.get_positions(self.config.trading.SYMBOL) or []
+            except Exception as e:
+                logger.warning(f"Reconciliation get_positions xato: {e}")
+        active_exchange = [
+            p for p in exchange_positions
+            if float(getattr(p, "size", 0) or 0) > 0
+        ]
+
+        # HEMA-CONTRACT P2: restore _last_close_ts from session_meta
+        if self._persistence and self.strategy:
+            try:
+                meta = self._persistence.load_session_meta()
+                last_close_ts = float(meta.get("last_close_ts", 0) or 0)
+                if last_close_ts > 0:
+                    if hasattr(self.strategy, "_last_close_ts"):
+                        self.strategy._last_close_ts = last_close_ts
+                    logger.info(f"P2: restored last_close_ts={last_close_ts} from state_meta")
+            except Exception as e:
+                logger.debug(f"P2 session_meta restore xato: {e}")
+
         # TREND-#2 fix: actually apply loaded positions to strategy
         loaded_position = None
+        saved = []
         if self._persistence:
             try:
                 saved = self._persistence.load_positions() or []
+                # HEMA-CONTRACT P5 Case 1: saved present, exchange empty → clear stale
+                if saved and not active_exchange:
+                    logger.warning(
+                        "[RECONCILE] Saved state but no exchange position — "
+                        "clearing stale state (closed during downtime)"
+                    )
+                    self._persistence.clear_positions()
+                    saved = []
+
                 active = [p for p in saved if (p.get("size") or p.get("lot") or 0) > 0]
                 if active:
                     p = active[0]  # trend bot tracks single position
                     from .strategy import Position, TrailingPhase
+                    saved_size = float(p.get("size", p.get("lot", 0)) or 0)
+
+                    # HEMA-CONTRACT P5 Case 3: cross-check size, trust exchange on >1% mismatch
+                    if active_exchange:
+                        ex_size = float(getattr(active_exchange[0], "size", 0) or 0)
+                        if saved_size > 0 and abs(saved_size - ex_size) / saved_size > 0.01:
+                            logger.warning(
+                                f"[RECONCILE-MISMATCH] saved_size={saved_size} vs "
+                                f"exchange_size={ex_size} — trusting exchange"
+                            )
+                            saved_size = ex_size
+
                     loaded_position = Position(
                         side=str(p.get("side", "long")).lower(),
                         entry_price=float(p.get("entry_price", 0) or 0),
-                        size=float(p.get("size", p.get("lot", 0)) or 0),
+                        size=saved_size,
                         stop_price=float(p.get("stop_price", 0) or 0),
                         order_id=str(p.get("order_id", p.get("id", ""))),
                         opened_ts=float(p.get("opened_ts", time.time())),
@@ -327,6 +373,17 @@ class TrendRobotWithWebhook(TrendRobot):
         if getattr(self, "_last_close_was_phantom", False):
             reason = "PHANTOM_CLOSE"
 
+        # HEMA-CONTRACT A2+S3+W2: gate webhook by _last_close_verified.
+        # If close didn't verify on Bitget, do NOT mark closed in HEMA —
+        # next sync tick will retry. Avoids "marked closed in HEMA, still
+        # open on Bitget" drift.
+        if not getattr(self, "_last_close_verified", True):
+            logger.warning(
+                "trade_closed webhook SKIPPED: close not verified on Bitget. "
+                "HEMA DB stays OPEN; next sync tick will retry."
+            )
+            return
+
         # Allow webhook during RUNNING + STOPPING (graceful shutdown with position)
         if self._webhook and entry > 0 and size > 0 and self.state in (RobotState.RUNNING, RobotState.STOPPING):
             try:
@@ -348,6 +405,11 @@ class TrendRobotWithWebhook(TrendRobot):
         if self._persistence:
             try:
                 self._persistence.clear_positions()
+                # HEMA-CONTRACT P2: stamp last_close_ts so cooldown survives restart
+                stamp = getattr(self.strategy, "_last_close_ts", None) if self.strategy else None
+                self._persistence.save_session_meta({
+                    "last_close_ts": stamp if stamp is not None else time.time(),
+                })
             except Exception:
                 pass
 

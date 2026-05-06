@@ -251,6 +251,34 @@ class StatePersistence:
             logger.error(f"Failed to load stats: {e}")
             return {}
 
+    def save_session_meta(self, meta: Dict[str, Any]) -> bool:
+        """HEMA-CONTRACT P2: session_meta saqlash (last_close_ts etc).
+        Cooldown va kill switch restart'dan omon qoladi."""
+        if not self._enabled:
+            return False
+        try:
+            state = self._load_state()
+            existing = state.get("session_meta", {}) or {}
+            existing.update(meta)
+            state["session_meta"] = existing
+            state["updated_at"] = datetime.utcnow().isoformat()
+            self._save_state(state)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save session_meta: {e}")
+            return False
+
+    def load_session_meta(self) -> Dict[str, Any]:
+        """HEMA-CONTRACT P2: load session_meta after restart."""
+        if not self._enabled:
+            return {}
+        try:
+            state = self._load_state()
+            return state.get("session_meta", {}) or {}
+        except Exception as e:
+            logger.error(f"Failed to load session_meta: {e}")
+            return {}
+
     def get_state_file_path(self) -> str:
         """State fayl yo'lini olish"""
         return str(self.state_file)
@@ -262,8 +290,8 @@ class StatePersistence:
                 return json.loads(self.state_file.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON in state file, creating new")
-                return {"positions": [], "stats": {}}
-        return {"positions": [], "stats": {}}
+                return {"positions": [], "stats": {}, "session_meta": {}}
+        return {"positions": [], "stats": {}, "session_meta": {}}
 
     def _save_state(self, state: Dict[str, Any]):
         """State faylni atomik yozish (HEMA-CONTRACT P3): temp file + os.replace.
