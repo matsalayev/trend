@@ -1,0 +1,369 @@
+{
+  "version": "v3_all_pairs",
+  "train_period": [
+    "2025-11-05T00:00:00+00:00",
+    "2026-03-05T00:00:00+00:00"
+  ],
+  "test_period": [
+    "2026-03-05T00:00:00+00:00",
+    "2026-05-04T00:00:00+00:00"
+  ],
+  "full_period": [
+    "2025-11-05T00:00:00+00:00",
+    "2026-05-04T00:00:00+00:00"
+  ],
+  "all_pairs_enabled": true,
+  "per_pair": {
+    "BTCUSDT": {
+      "adx_threshold": 30,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 2.5,
+      "train": {
+        "trades": 27,
+        "wins": 21,
+        "losses": 6,
+        "winrate": 77.77777777777779,
+        "net_pnl": 94.76605001152916,
+        "fees": 30.499181425066435,
+        "net_after": 64.26686858646272,
+        "max_dd_pct": 9.975999317369887,
+        "sl_count": 3
+      },
+      "test": {
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "winrate": 33.33333333333333,
+        "net_pnl": -50.20902605557785,
+        "fees": 10.775755785714182,
+        "net_after": -60.98478184129203,
+        "max_dd_pct": 10.570565806192544,
+        "sl_count": 1
+      },
+      "full": {
+        "trades": 33,
+        "wins": 23,
+        "losses": 10,
+        "winrate": 69.6969696969697,
+        "net_pnl": 44.5570239559513,
+        "fees": 41.2749372107806,
+        "net_after": 3.2820867451707016,
+        "max_dd_pct": 11.602041105189672,
+        "sl_count": 4
+      }
+    },
+    "ETHUSDT": {
+      "adx_threshold": 33,
+      "chop_max_for_entry": 42,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 1.5,
+      "train": {
+        "trades": 12,
+        "wins": 10,
+        "losses": 2,
+        "winrate": 83.33333333333334,
+        "net_pnl": 47.94555486847876,
+        "fees": 10.76433604670089,
+        "net_after": 37.18121882177787,
+        "max_dd_pct": 9.526416048377492,
+        "sl_count": 1
+      },
+      "test": {
+        "trades": 5,
+        "wins": 5,
+        "losses": 0,
+        "winrate": 100.0,
+        "net_pnl": 61.734876943422606,
+        "fees": 7.22130306792107,
+        "net_after": 54.513573875501535,
+        "max_dd_pct": 8.39077262690356,
+        "sl_count": 0
+      },
+      "full": {
+        "trades": 17,
+        "wins": 15,
+        "losses": 2,
+        "winrate": 88.23529411764706,
+        "net_pnl": 109.68043181190137,
+        "fees": 17.985639114621957,
+        "net_after": 91.69479269727941,
+        "max_dd_pct": 10.236014684450291,
+        "sl_count": 1
+      }
+    },
+    "SOLUSDT": {
+      "adx_threshold": 35,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 1.5,
+      "train": {
+        "trades": 8,
+        "wins": 6,
+        "losses": 2,
+        "winrate": 75.0,
+        "net_pnl": 42.778387150166544,
+        "fees": 8.96856806124815,
+        "net_after": 33.809819088918395,
+        "max_dd_pct": 10.62442575580609,
+        "sl_count": 1
+      },
+      "test": {
+        "trades": 1,
+        "wins": 0,
+        "losses": 1,
+        "winrate": 0.0,
+        "net_pnl": -47.91918750000006,
+        "fees": 1.827,
+        "net_after": -49.74618750000006,
+        "max_dd_pct": 6.110140759196234,
+        "sl_count": 1
+      },
+      "full": {
+        "trades": 9,
+        "wins": 6,
+        "losses": 3,
+        "winrate": 66.66666666666666,
+        "net_pnl": -5.140800349833517,
+        "fees": 10.79556806124815,
+        "net_after": -15.936368411081668,
+        "max_dd_pct": 11.811801897134465,
+        "sl_count": 2
+      }
+    },
+    "BNBUSDT": {
+      "adx_threshold": 30,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 3.5,
+      "train": {
+        "trades": 15,
+        "wins": 10,
+        "losses": 5,
+        "winrate": 66.66666666666666,
+        "net_pnl": -23.65094238950595,
+        "fees": 16.197053386847617,
+        "net_after": -39.84799577635357,
+        "max_dd_pct": 12.882256971571879,
+        "sl_count": 3
+      },
+      "test": {
+        "trades": 4,
+        "wins": 3,
+        "losses": 1,
+        "winrate": 75.0,
+        "net_pnl": -30.135402403840132,
+        "fees": 5.358787643855989,
+        "net_after": -35.49419004769612,
+        "max_dd_pct": 6.923344005719244,
+        "sl_count": 1
+      },
+      "full": {
+        "trades": 19,
+        "wins": 12,
+        "losses": 7,
+        "winrate": 63.1578947368421,
+        "net_pnl": -55.506857636560405,
+        "fees": 21.55687553020983,
+        "net_after": -77.06373316677023,
+        "max_dd_pct": 12.882256971571879,
+        "sl_count": 4
+      }
+    },
+    "XRPUSDT": {
+      "adx_threshold": 33,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 3.5,
+      "train": {
+        "trades": 12,
+        "wins": 10,
+        "losses": 2,
+        "winrate": 83.33333333333334,
+        "net_pnl": 134.05448035663915,
+        "fees": 10.768596568836276,
+        "net_after": 123.28588378780287,
+        "max_dd_pct": 13.557370791143757,
+        "sl_count": 0
+      },
+      "test": {
+        "trades": 3,
+        "wins": 3,
+        "losses": 0,
+        "winrate": 100.0,
+        "net_pnl": 20.13250207754352,
+        "fees": 3.5924435136859114,
+        "net_after": 16.54005856385761,
+        "max_dd_pct": 4.388848534382679,
+        "sl_count": 0
+      },
+      "full": {
+        "trades": 15,
+        "wins": 13,
+        "losses": 2,
+        "winrate": 86.66666666666667,
+        "net_pnl": 154.18698243418268,
+        "fees": 14.361040082522187,
+        "net_after": 139.8259423516605,
+        "max_dd_pct": 15.798302602800726,
+        "sl_count": 0
+      }
+    },
+    "AVAXUSDT": {
+      "adx_threshold": 35,
+      "chop_max_for_entry": 60,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 2.5,
+      "train": {
+        "trades": 16,
+        "wins": 6,
+        "losses": 10,
+        "winrate": 37.5,
+        "net_pnl": 212.3196756784167,
+        "fees": 28.67267476005376,
+        "net_after": 183.64700091836295,
+        "max_dd_pct": 23.265483211466336,
+        "sl_count": 2
+      },
+      "test": {
+        "trades": 7,
+        "wins": 5,
+        "losses": 2,
+        "winrate": 71.42857142857143,
+        "net_pnl": 197.96981001142123,
+        "fees": 12.661211925911106,
+        "net_after": 185.3085980855101,
+        "max_dd_pct": 20.044600325068604,
+        "sl_count": 0
+      },
+      "full": {
+        "trades": 23,
+        "wins": 11,
+        "losses": 12,
+        "winrate": 47.82608695652174,
+        "net_pnl": 410.28948568983793,
+        "fees": 41.33388668596485,
+        "net_after": 368.9555990038731,
+        "max_dd_pct": 33.237407314081594,
+        "sl_count": 2
+      }
+    },
+    "ADAUSDT": {
+      "adx_threshold": 35,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 2.5,
+      "train": {
+        "trades": 8,
+        "wins": 5,
+        "losses": 3,
+        "winrate": 62.5,
+        "net_pnl": -59.16686373542976,
+        "fees": 8.975670088063419,
+        "net_after": -68.14253382349318,
+        "max_dd_pct": 15.956543052984474,
+        "sl_count": 3
+      },
+      "test": {
+        "trades": 2,
+        "wins": 0,
+        "losses": 2,
+        "winrate": 0.0,
+        "net_pnl": -93.97725000000003,
+        "fees": 3.5459999999999994,
+        "net_after": -97.52325000000002,
+        "max_dd_pct": 9.870798182169805,
+        "sl_count": 2
+      },
+      "full": {
+        "trades": 10,
+        "wins": 5,
+        "losses": 5,
+        "winrate": 50.0,
+        "net_pnl": -153.14411373542978,
+        "fees": 12.521670088063418,
+        "net_after": -165.6657838234932,
+        "max_dd_pct": 19.53670036097353,
+        "sl_count": 5
+      }
+    },
+    "DOGEUSDT": {
+      "adx_threshold": 35,
+      "chop_max_for_entry": 42,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 3.5,
+      "train": {
+        "trades": 17,
+        "wins": 11,
+        "losses": 6,
+        "winrate": 64.70588235294117,
+        "net_pnl": 79.56846042061649,
+        "fees": 8.119039664728897,
+        "net_after": 71.44942075588759,
+        "max_dd_pct": 9.219755650627892,
+        "sl_count": 0
+      },
+      "test": {
+        "trades": 5,
+        "wins": 4,
+        "losses": 1,
+        "winrate": 80.0,
+        "net_pnl": 21.697516743992715,
+        "fees": 2.715055960810382,
+        "net_after": 18.982460783182333,
+        "max_dd_pct": 4.9205650062838275,
+        "sl_count": 0
+      },
+      "full": {
+        "trades": 23,
+        "wins": 17,
+        "losses": 6,
+        "winrate": 73.91304347826086,
+        "net_pnl": 113.00049336852844,
+        "fees": 10.827018647940982,
+        "net_after": 102.17347472058745,
+        "max_dd_pct": 11.896992622927215,
+        "sl_count": 0
+      }
+    },
+    "LINKUSDT": {
+      "adx_threshold": 35,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 3.5,
+      "train": {
+        "trades": 8,
+        "wins": 6,
+        "losses": 2,
+        "winrate": 75.0,
+        "net_pnl": 31.96529102561424,
+        "fees": 7.240624227043586,
+        "net_after": 24.724666798570652,
+        "max_dd_pct": 7.5654940105314665,
+        "sl_count": 1
+      },
+      "test": {
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "winrate": 0.0,
+        "net_pnl": 0,
+        "fees": 0.0,
+        "net_after": 0.0,
+        "max_dd_pct": 0.0,
+        "sl_count": 0
+      },
+      "full": {
+        "trades": 8,
+        "wins": 6,
+        "losses": 2,
+        "winrate": 75.0,
+        "net_pnl": 31.96529102561424,
+        "fees": 7.240624227043586,
+        "net_after": 24.724666798570652,
+        "max_dd_pct": 7.5654940105314665,
+        "sl_count": 1
+      }
+    }
+  }
+}

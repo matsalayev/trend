@@ -1,0 +1,332 @@
+{
+  "ETHUSDT": {
+    "test60d": {
+      "periodDays": 60,
+      "trades": 12,
+      "wins": 10,
+      "losses": 2,
+      "winratePct": 83.33,
+      "totalVolumeUsd": 21162.57,
+      "avgPositionSizeUsd": 881.77,
+      "grossPnlUsd": 81.91,
+      "feesUsd": 12.7,
+      "netPnlUsd": 69.21,
+      "finalBalanceUsd": 1069.21,
+      "maxBalanceUsd": 1083.25,
+      "minBalanceUsd": 930.1,
+      "returnPct": 6.92,
+      "aprPct": 42.1,
+      "maxDrawdownUsd": 83.09,
+      "maxDrawdownPct": 7.67,
+      "avgWinUsd": 14.07,
+      "avgLossUsd": -35.73,
+      "bestTradeUsd": 28.99,
+      "worstTradeUsd": -62.3,
+      "expectancyUsd": 5.77,
+      "profitFactor": 1.97,
+      "sharpeRatio": 1.78,
+      "monthlyBreakdown": {
+        "2026-03": {
+          "trades": 3,
+          "wins": 2,
+          "pnl": -38.76,
+          "fees": 3.65
+        },
+        "2026-04": {
+          "trades": 8,
+          "wins": 8,
+          "pnl": 117.14,
+          "fees": 7.24
+        },
+        "2026-05": {
+          "trades": 1,
+          "wins": 0,
+          "pnl": -9.16,
+          "fees": 1.8
+        }
+      }
+    },
+    "full180d": {
+      "periodDays": 180,
+      "trades": 40,
+      "wins": 30,
+      "losses": 10,
+      "winratePct": 75.0,
+      "totalVolumeUsd": 69161.21,
+      "avgPositionSizeUsd": 864.52,
+      "grossPnlUsd": 161.07,
+      "feesUsd": 41.5,
+      "netPnlUsd": 119.57,
+      "finalBalanceUsd": 1119.57,
+      "maxBalanceUsd": 1172.08,
+      "minBalanceUsd": 910.87,
+      "returnPct": 11.96,
+      "aprPct": 24.25,
+      "maxDrawdownUsd": 188.58,
+      "maxDrawdownPct": 16.09,
+      "avgWinUsd": 12.98,
+      "avgLossUsd": -26.99,
+      "bestTradeUsd": 29.99,
+      "worstTradeUsd": -62.46,
+      "expectancyUsd": 2.99,
+      "profitFactor": 1.44,
+      "sharpeRatio": 1.09,
+      "monthlyBreakdown": {
+        "2025-11": {
+          "trades": 5,
+          "wins": 3,
+          "pnl": -44.82,
+          "fees": 5.42
+        },
+        "2025-12": {
+          "trades": 10,
+          "wins": 8,
+          "pnl": 82.46,
+          "fees": 8.94
+        },
+        "2026-01": {
+          "trades": 8,
+          "wins": 7,
+          "pnl": 127.57,
+          "fees": 7.17
+        },
+        "2026-02": {
+          "trades": 5,
+          "wins": 2,
+          "pnl": -111.8,
+          "fees": 7.26
+        },
+        "2026-03": {
+          "trades": 3,
+          "wins": 2,
+          "pnl": -38.76,
+          "fees": 3.65
+        },
+        "2026-04": {
+          "trades": 8,
+          "wins": 8,
+          "pnl": 117.14,
+          "fees": 7.24
+        },
+        "2026-05": {
+          "trades": 1,
+          "wins": 0,
+          "pnl": -12.2,
+          "fees": 1.81
+        }
+      }
+    }
+  },
+  "AVAXUSDT": {
+    "test60d": {
+      "periodDays": 60,
+      "trades": 10,
+      "wins": 9,
+      "losses": 1,
+      "winratePct": 90.0,
+      "totalVolumeUsd": 30115.42,
+      "avgPositionSizeUsd": 1505.77,
+      "grossPnlUsd": 245.97,
+      "feesUsd": 18.07,
+      "netPnlUsd": 227.9,
+      "finalBalanceUsd": 1227.9,
+      "maxBalanceUsd": 1252.93,
+      "minBalanceUsd": 958.45,
+      "returnPct": 22.79,
+      "aprPct": 138.64,
+      "maxDrawdownUsd": 51.79,
+      "maxDrawdownPct": 4.13,
+      "avgWinUsd": 25.54,
+      "avgLossUsd": -1.94,
+      "bestTradeUsd": 115.93,
+      "worstTradeUsd": -1.94,
+      "expectancyUsd": 22.79,
+      "profitFactor": 118.44,
+      "sharpeRatio": 4.27,
+      "monthlyBreakdown": {
+        "2026-03": {
+          "trades": 4,
+          "wins": 3,
+          "pnl": 29.7,
+          "fees": 7.19
+        },
+        "2026-04": {
+          "trades": 6,
+          "wins": 6,
+          "pnl": 198.2,
+          "fees": 10.88
+        }
+      }
+    },
+    "full180d": {
+      "periodDays": 180,
+      "trades": 34,
+      "wins": 20,
+      "losses": 14,
+      "winratePct": 58.82,
+      "totalVolumeUsd": 101823.13,
+      "avgPositionSizeUsd": 1497.4,
+      "grossPnlUsd": 394.92,
+      "feesUsd": 61.09,
+      "netPnlUsd": 333.83,
+      "finalBalanceUsd": 1333.83,
+      "maxBalanceUsd": 1358.86,
+      "minBalanceUsd": 940.44,
+      "returnPct": 33.38,
+      "aprPct": 67.69,
+      "maxDrawdownUsd": 255.66,
+      "maxDrawdownPct": 18.81,
+      "avgWinUsd": 32.92,
+      "avgLossUsd": -23.19,
+      "bestTradeUsd": 116.54,
+      "worstTradeUsd": -62.04,
+      "expectancyUsd": 9.82,
+      "profitFactor": 2.03,
+      "sharpeRatio": 1.87,
+      "monthlyBreakdown": {
+        "2025-11": {
+          "trades": 3,
+          "wins": 1,
+          "pnl": 2.49,
+          "fees": 5.4
+        },
+        "2025-12": {
+          "trades": 8,
+          "wins": 5,
+          "pnl": 202.18,
+          "fees": 14.32
+        },
+        "2026-01": {
+          "trades": 5,
+          "wins": 2,
+          "pnl": 18.64,
+          "fees": 9.01
+        },
+        "2026-02": {
+          "trades": 8,
+          "wins": 3,
+          "pnl": -117.38,
+          "fees": 14.3
+        },
+        "2026-03": {
+          "trades": 4,
+          "wins": 3,
+          "pnl": 29.7,
+          "fees": 7.19
+        },
+        "2026-04": {
+          "trades": 6,
+          "wins": 6,
+          "pnl": 198.2,
+          "fees": 10.88
+        }
+      }
+    }
+  },
+  "DOGEUSDT": {
+    "test60d": {
+      "periodDays": 60,
+      "trades": 11,
+      "wins": 10,
+      "losses": 1,
+      "winratePct": 90.91,
+      "totalVolumeUsd": 9026.31,
+      "avgPositionSizeUsd": 410.29,
+      "grossPnlUsd": 69.69,
+      "feesUsd": 5.42,
+      "netPnlUsd": 64.27,
+      "finalBalanceUsd": 1064.27,
+      "maxBalanceUsd": 1071.2,
+      "minBalanceUsd": 985.81,
+      "returnPct": 6.43,
+      "aprPct": 39.1,
+      "maxDrawdownUsd": 28.23,
+      "maxDrawdownPct": 2.63,
+      "avgWinUsd": 6.52,
+      "avgLossUsd": -0.91,
+      "bestTradeUsd": 16.63,
+      "worstTradeUsd": -0.91,
+      "expectancyUsd": 5.84,
+      "profitFactor": 71.86,
+      "sharpeRatio": 3.58,
+      "monthlyBreakdown": {
+        "2026-03": {
+          "trades": 8,
+          "wins": 8,
+          "pnl": 49.08,
+          "fees": 3.61
+        },
+        "2026-04": {
+          "trades": 3,
+          "wins": 2,
+          "pnl": 15.19,
+          "fees": 1.81
+        }
+      }
+    },
+    "full180d": {
+      "periodDays": 180,
+      "trades": 45,
+      "wins": 32,
+      "losses": 13,
+      "winratePct": 71.11,
+      "totalVolumeUsd": 40537.78,
+      "avgPositionSizeUsd": 450.42,
+      "grossPnlUsd": 91.19,
+      "feesUsd": 24.32,
+      "netPnlUsd": 66.87,
+      "finalBalanceUsd": 1066.87,
+      "maxBalanceUsd": 1073.8,
+      "minBalanceUsd": 935.89,
+      "returnPct": 6.69,
+      "aprPct": 13.56,
+      "maxDrawdownUsd": 68.17,
+      "maxDrawdownPct": 6.35,
+      "avgWinUsd": 7.15,
+      "avgLossUsd": -12.46,
+      "bestTradeUsd": 16.63,
+      "worstTradeUsd": -31.02,
+      "expectancyUsd": 1.49,
+      "profitFactor": 1.41,
+      "sharpeRatio": 0.95,
+      "monthlyBreakdown": {
+        "2025-11": {
+          "trades": 3,
+          "wins": 1,
+          "pnl": -26.87,
+          "fees": 1.82
+        },
+        "2025-12": {
+          "trades": 6,
+          "wins": 3,
+          "pnl": -34.27,
+          "fees": 3.62
+        },
+        "2026-01": {
+          "trades": 7,
+          "wins": 5,
+          "pnl": 26.1,
+          "fees": 4.52
+        },
+        "2026-02": {
+          "trades": 14,
+          "wins": 11,
+          "pnl": 55.67,
+          "fees": 6.28
+        },
+        "2026-03": {
+          "trades": 12,
+          "wins": 10,
+          "pnl": 31.05,
+          "fees": 6.28
+        },
+        "2026-04": {
+          "trades": 3,
+          "wins": 2,
+          "pnl": 15.19,
+          "fees": 1.81
+        }
+      }
+    }
+  }
+}

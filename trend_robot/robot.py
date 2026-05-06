@@ -371,8 +371,22 @@ class TrendRobot:
                 return
             pos = self.strategy.position
 
-        # 2. Trailing stop update
+        # 2. Trailing stop update + sync to exchange (TREND-#1 follow-up)
+        old_stop = pos.stop_price
         self.strategy.update_trailing_stop(pos, self.current_price)
+        # Sync new SL to exchange if it advanced (only ratchets in profit direction)
+        if pos.stop_price != old_stop:
+            try:
+                # modify_tpsl re-places exchange-side SL with new price
+                if hasattr(self.client, "modify_tpsl"):
+                    await self.client.modify_tpsl(
+                        symbol=self.config.trading.SYMBOL,
+                        side="long" if pos.side == "long" else "short",
+                        sl_price=pos.stop_price,
+                    )
+                    logger.debug(f"Exchange SL updated: ${old_stop:.4f} → ${pos.stop_price:.4f}")
+            except Exception as e:
+                logger.warning(f"Trailing SL sync to exchange failed (local SL still valid): {e}")
 
         # 3. SL check (intrabar) — MAJBURIY EXIT, fee-aware bypass
         stop_hit = self.strategy.check_stop_hit(pos, latest.high, latest.low)
@@ -519,15 +533,27 @@ class TrendRobot:
                 )
                 return False
 
+            # TREND-#1 fix: compute SL price BEFORE placing order so we can pass it
+            # to the exchange. Was: bot had ZERO exchange-side protection, so a
+            # crash/network loss could let position liquidate.
+            if side == "long":
+                sl_distance = self.current_price * self.config.exit.SL_PERCENT / 100
+                exchange_sl = self.current_price - sl_distance
+            else:
+                sl_distance = self.current_price * self.config.exit.SL_PERCENT / 100
+                exchange_sl = self.current_price + sl_distance
+
             if side == "long":
                 result = await self.client.open_long(
                     symbol=self.config.trading.SYMBOL, size=size,
                     margin_mode=self.config.trading.MARGIN_MODE,
+                    sl_price=exchange_sl,  # TREND-#1: exchange-side SL
                 )
             else:
                 result = await self.client.open_short(
                     symbol=self.config.trading.SYMBOL, size=size,
                     margin_mode=self.config.trading.MARGIN_MODE,
+                    sl_price=exchange_sl,  # TREND-#1: exchange-side SL
                 )
 
             order_id = (result.get("orderId", str(int(time.time() * 1000)))
@@ -540,8 +566,8 @@ class TrendRobot:
             )
             logger.info(
                 f"OPEN {side.upper()}: {size:.6f} @ ${self.current_price:.4f} "
-                f"(SL: ${pos.stop_price:.4f}) — ADX={self.strategy.adx.value:.1f} "
-                f"ST={self.strategy.supertrend.direction}"
+                f"(SL exchange: ${exchange_sl:.4f}, local: ${pos.stop_price:.4f}) — "
+                f"ADX={self.strategy.adx.value:.1f} ST={self.strategy.supertrend.direction}"
             )
             return True
 
@@ -606,7 +632,8 @@ class TrendRobot:
         exit_fee = exit_price * close_size * self.config.risk.TAKER_FEE_RATE
         net = pnl_delta - fee_share - exit_fee
 
-        self.strategy.on_trade_closed(net)
+        # TREND-#9 fix: mark as partial so today_trades isn't inflated
+        self.strategy.on_trade_closed(net, is_partial=True)
 
         # Reduce position size
         pos.size -= close_size

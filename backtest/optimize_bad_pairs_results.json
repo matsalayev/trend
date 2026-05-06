@@ -1,0 +1,131 @@
+{
+  "BNBUSDT": {
+    "params": {
+      "adx_threshold": 25,
+      "chop_max_for_entry": 50,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 3.0,
+      "supertrend_multiplier": 3.0,
+      "ema_fast": 12,
+      "ema_slow": 26,
+      "use_htf_filter": false
+    },
+    "train": {
+      "trades": 73,
+      "wins": 54,
+      "losses": 19,
+      "winrate": 73.97260273972603,
+      "net_pnl": 95.59453704463681,
+      "fees": 86.50002522317321,
+      "net_after": 9.094511821463598,
+      "max_dd_pct": 26.525356527086668
+    },
+    "test": {
+      "trades": 26,
+      "wins": 16,
+      "losses": 10,
+      "winrate": 61.53846153846154,
+      "net_pnl": -59.418351562209736,
+      "fees": 37.80256967381656,
+      "net_after": -97.2209212360263,
+      "max_dd_pct": 9.139853530779087
+    },
+    "full": {
+      "trades": 99,
+      "wins": 69,
+      "losses": 30,
+      "winrate": 69.6969696969697,
+      "net_pnl": 34.4550859124007,
+      "fees": 124.30362974832119,
+      "net_after": -89.84854383592048,
+      "max_dd_pct": 26.525356527086668
+    },
+    "status": "\u2717 DROP"
+  },
+  "SOLUSDT": {
+    "params": {
+      "adx_threshold": 30,
+      "chop_max_for_entry": 42,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 4.0,
+      "supertrend_multiplier": 3.0,
+      "ema_fast": 12,
+      "ema_slow": 26,
+      "use_htf_filter": false
+    },
+    "train": {
+      "trades": 28,
+      "wins": 16,
+      "losses": 12,
+      "winrate": 57.14285714285714,
+      "net_pnl": 114.42884439042643,
+      "fees": 30.77617514353275,
+      "net_after": 83.65266924689368,
+      "max_dd_pct": 24.714851560512958
+    },
+    "test": {
+      "trades": 15,
+      "wins": 11,
+      "losses": 4,
+      "winrate": 73.33333333333333,
+      "net_pnl": 145.79571977176983,
+      "fees": 16.19580271349552,
+      "net_after": 129.59991705827431,
+      "max_dd_pct": 14.756214842102896
+    },
+    "full": {
+      "trades": 43,
+      "wins": 27,
+      "losses": 16,
+      "winrate": 62.7906976744186,
+      "net_pnl": 260.22456416219626,
+      "fees": 46.97197785702826,
+      "net_after": 213.252586305168,
+      "max_dd_pct": 32.83075354725669
+    },
+    "status": "\u2713 KEEP"
+  },
+  "ADAUSDT": {
+    "params": {
+      "adx_threshold": 35,
+      "chop_max_for_entry": 42,
+      "sl_atr_multiplier": 1.0,
+      "trailing_atr_multiplier": 4.0,
+      "supertrend_multiplier": 2.0,
+      "ema_fast": 12,
+      "ema_slow": 26,
+      "use_htf_filter": false
+    },
+    "train": {
+      "trades": 19,
+      "wins": 11,
+      "losses": 8,
+      "winrate": 57.89473684210527,
+      "net_pnl": -26.861521490288627,
+      "fees": 19.84157451000302,
+      "net_after": -46.70309600029165,
+      "max_dd_pct": 12.504949881239606
+    },
+    "test": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "winrate": 66.66666666666666,
+      "net_pnl": -32.10280015304343,
+      "fees": 3.583214104620946,
+      "net_after": -35.686014257664375,
+      "max_dd_pct": 7.331969700611871
+    },
+    "full": {
+      "trades": 22,
+      "wins": 13,
+      "losses": 9,
+      "winrate": 59.09090909090909,
+      "net_pnl": -58.964321643332056,
+      "fees": 23.424788614623964,
+      "net_after": -82.38911025795602,
+      "max_dd_pct": 13.156499279209285
+    },
+    "status": "\u2717 DROP"
+  }
+}

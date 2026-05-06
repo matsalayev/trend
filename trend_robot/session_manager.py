@@ -163,39 +163,111 @@ class TrendRobotWithWebhook(TrendRobot):
         self._prev_position: Optional[Any] = None
 
     async def initialize(self):
-        """Initialize + position reconciliation"""
+        """Initialize + position reconciliation.
+
+        TREND-#2/#3 fix: actually reconstruct strategy.position from saved state
+        and adopt orphan exchange positions. Was: load_positions() result was
+        DISCARDED → restart pyramid (3 simultaneous AVAX SHORTs in production CSV).
+        """
         await super().initialize()
 
-        # State persistence dan pozitsiyalarni yuklash
+        # TREND-#2 fix: actually apply loaded positions to strategy
+        loaded_position = None
         if self._persistence:
             try:
-                saved = self._persistence.load_positions()
-                if saved:
-                    logger.info(f"Saqlangan pozitsiyalar yuklandi: {len(saved)} ta")
+                saved = self._persistence.load_positions() or []
+                active = [p for p in saved if (p.get("size") or p.get("lot") or 0) > 0]
+                if active:
+                    p = active[0]  # trend bot tracks single position
+                    from .strategy import Position, TrailingPhase
+                    loaded_position = Position(
+                        side=str(p.get("side", "long")).lower(),
+                        entry_price=float(p.get("entry_price", 0) or 0),
+                        size=float(p.get("size", p.get("lot", 0)) or 0),
+                        stop_price=float(p.get("stop_price", 0) or 0),
+                        order_id=str(p.get("order_id", p.get("id", ""))),
+                        opened_ts=float(p.get("opened_ts", time.time())),
+                        trailing_phase=TrailingPhase.NONE,
+                    )
+                    if self.strategy and loaded_position.size > 0:
+                        self.strategy.position = loaded_position
+                        logger.warning(
+                            f"[STATE_RESTORE] Restored {loaded_position.side.upper()} "
+                            f"size={loaded_position.size} entry=${loaded_position.entry_price}"
+                        )
             except Exception as e:
                 logger.warning(f"State yuklashda xato: {e}")
 
-        # Webhook — positions_synced
+        # TREND-#3 fix: adopt orphan exchange position when local is empty
+        if self.strategy and not self.strategy.position:
+            try:
+                positions = await self.client.get_positions(self.config.trading.SYMBOL)
+                for p in (positions or []):
+                    size = float(getattr(p, "size", 0) or 0)
+                    if size > 0:
+                        side_norm = str(getattr(p, "side", "")).lower()
+                        if side_norm in ("buy", "long"):
+                            side_norm = "long"
+                        elif side_norm in ("sell", "short"):
+                            side_norm = "short"
+                        else:
+                            continue
+                        from .strategy import Position, TrailingPhase
+                        entry = float(getattr(p, "entry_price", 0) or 0)
+                        # Use config SL distance for adopted position
+                        sl_pct = self.config.exit.SL_PERCENT / 100
+                        stop = entry * (1 - sl_pct) if side_norm == "long" else entry * (1 + sl_pct)
+                        self.strategy.position = Position(
+                            side=side_norm, entry_price=entry, size=size,
+                            stop_price=stop, order_id=f"adopted_{int(time.time())}",
+                            opened_ts=time.time(), trailing_phase=TrailingPhase.NONE,
+                        )
+                        logger.warning(
+                            f"[ADOPT_ORPHAN] Adopted orphan {side_norm.upper()} "
+                            f"size={size} entry=${entry} stop=${stop:.4f}"
+                        )
+                        break
+            except Exception as e:
+                logger.warning(f"Orphan adoption error: {e}")
+
+        # Webhook — positions_synced (convert dataclass to dict for JSON)
         if self._webhook:
             try:
                 positions = await self.client.get_positions(self.config.trading.SYMBOL)
+                positions_dict = []
+                for p in (positions or []):
+                    if hasattr(p, "__dict__"):
+                        positions_dict.append({
+                            "side": getattr(p, "side", ""),
+                            "size": float(getattr(p, "size", 0) or 0),
+                            "entry_price": float(getattr(p, "entry_price", 0) or 0),
+                            "leverage": int(getattr(p, "leverage", 0) or 0),
+                            "unrealized_pnl": float(getattr(p, "unrealized_pnl", 0) or 0),
+                        })
+                    elif isinstance(p, dict):
+                        positions_dict.append(p)
                 await self._webhook.send_positions_synced(
                     user_bot_id=self._session.user_bot_id,
                     symbol=self.config.trading.SYMBOL,
-                    positions=positions,
+                    positions=positions_dict,
                 )
             except Exception as e:
                 logger.warning(f"positions_synced yuborishda xato: {e}")
 
-    async def _open_position(self, signal, size: float):
-        """v2.0: delegate to TrendRobot._open_position, then emit trade_opened webhook."""
+    async def _open_position(self, signal, size: float) -> bool:
+        """v2.0: delegate to TrendRobot._open_position, then emit trade_opened webhook.
+
+        TREND-#5 fix: must return parent's bool so register_entry() is called.
+        Was: parent returned bool but override returned None → register_entry()
+        never called → max_trades_per_hour gate defeated.
+        """
         from .strategy import SignalType
         # Parent handles: margin check, exchange order, strategy.create_position, SL
-        await super()._open_position(signal, size)
+        opened = await super()._open_position(signal, size)
 
         pos = self.strategy.position if self.strategy else None
         if pos is None:
-            return  # parent skipped (margin/API error)
+            return False  # parent skipped (margin/API error)
 
         side = "buy" if signal == SignalType.LONG else "sell"
         symbol = self.config.trading.SYMBOL
@@ -233,6 +305,8 @@ class TrendRobotWithWebhook(TrendRobot):
 
         except Exception as e:
             logger.error(f"Order xatosi: {e}")
+
+        return opened  # TREND-#5: return parent's bool for register_entry() chain
 
     async def _close_position(self, pos, exit_price: float, reason: str) -> None:
         """v2.0: delegate to parent close, then emit trade_closed webhook."""
@@ -589,13 +663,23 @@ class SessionManager:
         cs = custom_settings or {}
         s = settings or {}
 
-        # Demo mode
-        is_demo = str(s.get("isDemo", exchange.get("isDemo", "true"))).lower() in ("true", "1")
+        # TREND-#13 fix: default isDemo=False (was "true" → silent demo for real users)
+        is_demo = str(s.get("isDemo", exchange.get("isDemo", "false"))).lower() in ("true", "1")
 
         # Fee rate (HEMA % da yuboradi, biz decimal ga o'tkazamiz)
         fee_rate = float(cs.get("feeRate", s.get("feeRate", 0.1))) / 100
 
         trading_pair = str(cs.get('tradingPair', s.get('tradingPair', cs.get('symbol', s.get('symbol', 'BTCUSDT')))))
+
+        # TREND-#4 fix: validate trading_pair against SUPPORTED_PAIRS.
+        # Was: server.py had separate dropdown list including ADAUSDT but config.py
+        # SUPPORTED_PAIRS excluded it → ADA registrations accepted with default
+        # preset → orphan 10000 ADA SHORT for 12+ hours.
+        if not is_supported_pair(trading_pair):
+            raise ValueError(
+                f"Pair '{trading_pair}' qo'llab-quvvatlanmaydi. "
+                f"Mavjud pair'lar: {', '.join(SUPPORTED_PAIRS)}"
+            )
 
         # v2.0 Smart Trend params (preset/customSettings camelCase → snake_case)
         def _opt_float(k: str) -> Optional[float]:

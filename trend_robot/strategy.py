@@ -699,14 +699,27 @@ class TrendStrategy:
     # ─── STATS ───────────────────────────────────────────────────────────────
 
     def register_entry(self, now_ts: Optional[float] = None) -> None:
-        """Yangi entry ochilganda — trades-per-hour rolling window'ga qo'shamiz."""
+        """Yangi entry ochilganda — trades-per-hour rolling window + today_trades.
+
+        TREND-#9 fix: increment today_trades HERE on full entry (not on close).
+        Was: on_trade_closed called for partials too → today_trades inflated 3×
+        per round-trip with partial TP1+TP2+final.
+        """
         now = now_ts if now_ts is not None else time.time()
         self._recent_trade_ts.append(now)
         # Ortiqcha eski entry'larni tozalash
         cutoff = now - 3600
         self._recent_trade_ts = [t for t in self._recent_trade_ts if t >= cutoff]
+        # TREND-#9: today_trades = full-entry count (not close events)
+        self.increment_today_trades()
 
-    def on_trade_closed(self, net_pnl: float, now_ts: Optional[float] = None) -> None:
+    def on_trade_closed(self, net_pnl: float, now_ts: Optional[float] = None,
+                        is_partial: bool = False) -> None:
+        """TREND-#9 fix: split partial-fill from full-close accounting."""
+        if is_partial:
+            # Partial TP — only accumulate PnL, don't count as new trade
+            self.realized_pnl += net_pnl
+            return
         self.total_trades += 1
         self.realized_pnl += net_pnl
         if net_pnl > 0:
@@ -733,7 +746,8 @@ class TrendStrategy:
                 )
                 # Streakni reset qilamiz (cooldown'dan keyin yangi sanovdan boshlanadi)
                 self._consecutive_losses = 0
-        self.increment_today_trades()
+        # TREND-#9 fix: today_trades incremented in register_entry (entry time),
+        # NOT here. Was inflated by 3× when partial TPs fired.
 
     def winrate(self) -> float:
         closed = self.winning_trades + self.losing_trades
