@@ -168,6 +168,7 @@ class TestStrategy:
         assert hit is None
 
     def test_partial_tp_long_hit(self, strategy):
+        # BUG-35: trigger is gross_pct + 2*taker_fee (round-trip), so 2% + 0.2% = 2.2%
         strategy.cfg.use_partial_tp = True
         strategy.cfg.partial_tp1_percent = 2.0
         strategy.cfg.partial_tp1_size_pct = 0.33
@@ -175,7 +176,9 @@ class TestStrategy:
         res = strategy.check_partial_tp(pos, high=102.5, low=100.0)
         assert res is not None
         exit_price, close_size = res
-        assert exit_price == pytest.approx(102.0)
+        fee_buffer = 2.0 * strategy.config.risk.TAKER_FEE_RATE
+        expected = 100.0 * (1 + 0.02 + fee_buffer)
+        assert exit_price == pytest.approx(expected)
         assert pos.partial_tp1_done
 
     def test_partial_tp_disabled(self, strategy):

@@ -564,7 +564,7 @@ class TrendStrategy:
         if not self.cfg.use_partial_tp:
             return None
 
-        fee_buffer = 2.0 * self.cfg.risk.TAKER_FEE_RATE  # round-trip
+        fee_buffer = 2.0 * self.config.risk.TAKER_FEE_RATE  # round-trip
 
         # Partial TP 1
         if not pos.partial_tp1_done:

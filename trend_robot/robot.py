@@ -566,9 +566,10 @@ class TrendRobot:
 
             # HEMA-CONTRACT S1+W1: VERIFY position appeared on Bitget BEFORE
             # saving local state. A1 — no fake open.
+            # 4-retry exponential backoff matches other bots (BUG-27..29 pattern).
             verified = False
             actual_entry = self.current_price
-            for attempt_delay in (0.5, 1.0, 1.5):
+            for attempt_delay in (0.5, 1.0, 2.0, 4.0):
                 await asyncio.sleep(attempt_delay)
                 try:
                     positions = await self.client.get_positions(symbol)
@@ -590,7 +591,7 @@ class TrendRobot:
             if not verified:
                 logger.error(
                     f"[OPEN_VERIFY_FAIL] {side.upper()} order placed but no "
-                    f"position appeared on Bitget after 3 retries. order_id={order_id}. "
+                    f"position appeared on Bitget after 4 retries. order_id={order_id}. "
                     f"Skipping local state (no fake trade)."
                 )
                 return False
@@ -752,13 +753,13 @@ class TrendRobot:
     # ─── POSITION SYNC ───────────────────────────────────────────────────────
 
     async def _sync_position(self) -> None:
-        """Exchange bilan position sync (grace period bilan)."""
-        if not self.strategy.position:
-            return
+        """Exchange bilan position sync (grace period bilan).
 
-        GRACE_SECONDS = 60.0
-        REQUIRED_EMPTY = 3
-
+        BUG-3 (orphan adoption): Sync ikki tomonlama:
+        - Local has, exchange empty → confirm closed (after grace)
+        - Local empty, exchange has → adopt as local (e.g. user opened
+          a position manually on Bitget; bot restarted but missed it).
+        """
         try:
             exchange_positions = await self.client.get_positions(
                 symbol=self.config.trading.SYMBOL
@@ -766,6 +767,33 @@ class TrendRobot:
         except Exception as e:
             logger.debug(f"Position sync xato: {e}")
             return
+
+        # ─── ADOPT: Local empty but exchange has position ────────────────────
+        if not self.strategy.position:
+            for ex in (exchange_positions or []):
+                ex_side = getattr(ex, "side", "").lower()
+                ex_size = float(getattr(ex, "size", 0) or 0)
+                if ex_side in ("long", "short") and ex_size > 0:
+                    ex_entry = float(getattr(ex, "entry_price", 0) or 0)
+                    if ex_entry <= 0:
+                        ex_entry = self.current_price
+                    logger.warning(
+                        f"[SYNC_ADOPT] Orphan position on exchange "
+                        f"({ex_side.upper()} {ex_size} @ ${ex_entry:.4f}) — "
+                        f"adopting into local state."
+                    )
+                    self.strategy.create_position(
+                        side=ex_side,
+                        entry_price=ex_entry,
+                        size=ex_size,
+                        order_id=f"adopted_{int(time.time() * 1000)}",
+                    )
+                    self._empty_sync_count = 0
+                    break
+            return
+
+        GRACE_SECONDS = 60.0
+        REQUIRED_EMPTY = 3
 
         # Aggregate exchange size for the position's side
         ex_size = 0.0
