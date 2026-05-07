@@ -555,13 +555,20 @@ class TrendStrategy:
                         low: float) -> Optional[Tuple[float, float]]:
         """
         Partial TP check — returns (exit_price, close_size) if hit, else None.
+
+        BUG-35: TP triggers were gross-percent only. Round-trip taker fees
+        (~0.12-0.20% depending on demo/live) ate into the realized partial,
+        so a "1.5% partial TP" actually netted ~1.30-1.38%. Add 2× taker as
+        buffer so triggers fire only when net target is met.
         """
         if not self.cfg.use_partial_tp:
             return None
 
+        fee_buffer = 2.0 * self.cfg.risk.TAKER_FEE_RATE  # round-trip
+
         # Partial TP 1
         if not pos.partial_tp1_done:
-            tp1_pct = self.cfg.partial_tp1_percent / 100
+            tp1_pct = self.cfg.partial_tp1_percent / 100 + fee_buffer
             if pos.side == "long":
                 tp1_price = pos.entry_price * (1 + tp1_pct)
                 if high >= tp1_price:
@@ -579,7 +586,7 @@ class TrendStrategy:
 
         # Partial TP 2
         if pos.partial_tp1_done and not pos.partial_tp2_done:
-            tp2_pct = self.cfg.partial_tp2_percent / 100
+            tp2_pct = self.cfg.partial_tp2_percent / 100 + fee_buffer
             if pos.side == "long":
                 tp2_price = pos.entry_price * (1 + tp2_pct)
                 if high >= tp2_price:

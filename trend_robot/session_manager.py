@@ -1141,17 +1141,76 @@ class SessionManager:
         logger.info(f"Settings updated: {session.session_key}")
 
     async def close_positions(self, user_id: str):
-        """Pozitsiyalarni yopish — idempotent"""
+        """Pozitsiyalarni yopish — A2 verify + state clear + webhook (BUG-33)."""
         try:
             session = self._find_session(user_id)
         except ValueError:
             logger.info(f"Close positions: session {user_id} yo'q — idempotent OK")
             return
-        if session.robot and session.robot.client:
-            await session.robot.client.close_all_positions(session.trading_pair)
+        if not (session.robot and session.robot.client):
+            return
+        symbol = session.trading_pair
+        pre_position = session.robot.strategy.position if session.robot.strategy else None
+
+        try:
+            await session.robot.client.close_all_positions(symbol)
+        except Exception as e:
+            logger.warning(f"close_all_positions xato: {e}")
+
+        # HEMA-CONTRACT A2: 4-retry verify
+        verified = False
+        for delay in (0.5, 1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            try:
+                after = await session.robot.client.get_positions(symbol)
+                active = [p for p in (after or []) if getattr(p, "size", 0) > 0]
+                if not active:
+                    verified = True
+                    break
+            except Exception as ve:
+                logger.warning(f"close-positions verify xato: {ve}")
+        if not verified:
+            logger.error(
+                f"close-positions: NOT verified for {symbol} after 4 retries — "
+                f"local state preserved, no webhook sent"
+            )
+            return
+
+        if session.robot.strategy:
+            session.robot.strategy.position = None
+        if session.state_persistence:
+            try:
+                session.state_persistence.clear_positions()
+            except Exception:
+                pass
+
+        if pre_position and session.webhook_client:
+            try:
+                exit_price = (
+                    session.robot.current_price
+                    if hasattr(session.robot, "current_price") and session.robot.current_price
+                    else float(getattr(pre_position, "entry_price", 0) or 0)
+                )
+                side_str = str(getattr(pre_position, "side", "")).lower()
+                trade_side = "BUY" if side_str in ("long", "buy") else "SELL"
+                qty = float(getattr(pre_position, "size", 0) or 0)
+                entry = float(getattr(pre_position, "entry_price", 0) or 0)
+                gross = (exit_price - entry) * qty if trade_side == "BUY" else (entry - exit_price) * qty
+                await session.webhook_client.send_trade_closed(
+                    user_bot_id=session.user_bot_id,
+                    symbol=symbol,
+                    side=trade_side,
+                    entry_price=entry,
+                    exit_price=exit_price,
+                    quantity=qty,
+                    pnl=gross,
+                    reason="CLOSE_ALL",
+                )
+            except Exception as wh_err:
+                logger.warning(f"close-positions trade_closed webhook xato: {wh_err}")
 
     async def force_sync(self, user_id: str):
-        """Exchange bilan sync — idempotent"""
+        """Exchange bilan sync — fetch + adopt + notify HEMA (BUG-34)."""
         try:
             session = self._find_session(user_id)
         except ValueError:
@@ -1159,6 +1218,60 @@ class SessionManager:
             return
         if session.state_persistence:
             session.state_persistence.clear_positions()
+        if session.robot and session.robot.strategy:
+            session.robot.strategy.position = None
+
+        if session.robot and session.robot.client and session.robot.strategy:
+            try:
+                from .strategy import Position
+                symbol = session.robot.config.trading.SYMBOL
+                raw = await session.robot.client.get_positions(symbol)
+                positions_data = []
+                for pos in (raw or []):
+                    side_raw = str(getattr(pos, "side", "") or "").lower()
+                    if side_raw in ("buy", "long"):
+                        side_norm = "long"
+                    elif side_raw in ("sell", "short"):
+                        side_norm = "short"
+                    else:
+                        continue
+                    size = float(getattr(pos, "size", 0) or 0)
+                    if size <= 0:
+                        continue
+                    entry_price = float(getattr(pos, "entry_price", 0) or 0)
+                    if session.robot.strategy.position is None:
+                        try:
+                            adopted = Position(
+                                id=f"{symbol}_{side_norm}_synced",
+                                side=side_norm,
+                                entry_price=entry_price,
+                                size=size,
+                                opened_ts=time.time(),
+                            )
+                            session.robot.strategy.position = adopted
+                            logger.info(
+                                f"Force sync: adopted {side_norm} {size} @ {entry_price} for {symbol}"
+                            )
+                        except Exception as adopt_err:
+                            logger.warning(f"Force sync adopt xato: {adopt_err}")
+                    positions_data.append({
+                        "side": side_raw,
+                        "size": size,
+                        "entry_price": entry_price,
+                        "leverage": int(getattr(pos, "leverage", 0) or 0),
+                        "unrealized_pnl": float(getattr(pos, "unrealized_pnl", 0) or 0),
+                    })
+                if session.webhook_client:
+                    try:
+                        await session.webhook_client.send_positions_synced(
+                            user_bot_id=session.user_bot_id,
+                            symbol=symbol,
+                            positions=positions_data,
+                        )
+                    except Exception as wh_err:
+                        logger.warning(f"Force sync positions_synced webhook xato: {wh_err}")
+            except Exception as e:
+                logger.warning(f"Force sync exchange fetch xato: {e}")
         logger.info(f"Force sync: {session.session_key}")
 
     async def unregister_user(self, user_id: str):

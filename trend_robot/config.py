@@ -55,7 +55,9 @@ class APIConfig:
     SECRET_KEY: str = ""
     PASSPHRASE: str = ""
     BASE_URL: str = "https://api.bitget.com"
-    DEMO_MODE: bool = True
+    # HEMA-CONTRACT A8: production-safe default. Demo must be explicit opt-in.
+    # Was True (CLI default), which silently routed real-money users to demo.
+    DEMO_MODE: bool = False
     REQUEST_TIMEOUT: float = 10.0
 
     @classmethod
@@ -64,7 +66,8 @@ class APIConfig:
             API_KEY=_get_env("BITGET_API_KEY"),
             SECRET_KEY=_get_env("BITGET_SECRET_KEY"),
             PASSPHRASE=_get_env("BITGET_PASSPHRASE"),
-            DEMO_MODE=_get_env_bool("DEMO_MODE", True),
+            # A8: default False — DEMO_MODE=true env required for demo
+            DEMO_MODE=_get_env_bool("DEMO_MODE", False),
         )
 
 
