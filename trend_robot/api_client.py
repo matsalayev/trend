@@ -782,25 +782,13 @@ class BitgetClient:
                           margin_coin: str = "USDT",
                           tp_price: Optional[float] = None,
                           sl_price: Optional[float] = None,
-                          margin_mode: str = "crossed") -> Dict:
+                          margin_mode: str = "crossed",
+                          hold_side: Optional[str] = None) -> Dict:
         """
-        Order yaratish
+        Order yaratish.
 
-        Args:
-            symbol: Trading pair
-            side: 'buy' yoki 'sell'
-            trade_side: 'open' (ochish) yoki 'close' (yopish)
-            size: Hajm
-            order_type: 'market' yoki 'limit'
-            price: Limit order uchun narx
-            product_type: Product type
-            margin_coin: Margin valyutasi
-            tp_price: Take Profit narx
-            sl_price: Stop Loss narx
-            margin_mode: 'crossed' yoki 'isolated'
-
-        Returns:
-            Order javobi
+        hold_side: 'long' yoki 'short' — hedge mode close uchun MAJBURIY
+            (Bitget aks holda 22002 "No position to close" qaytaradi).
         """
         body = {
             "symbol": symbol,
@@ -813,6 +801,9 @@ class BitgetClient:
             "size": str(size),
             "force": "GTC"
         }
+        # BUG-26: hedge-mode close orders need holdSide
+        if hold_side:
+            body["holdSide"] = hold_side
 
         if order_type == "limit" and price:
             body["price"] = str(price)
@@ -909,26 +900,28 @@ class BitgetClient:
 
     async def close_long(self, symbol: str, size: float,
                          margin_mode: str = "crossed") -> Dict:
-        """LONG pozitsiyani yopish"""
+        """LONG pozitsiyani yopish — holdSide='long' (BUG-26)"""
         return await self.place_order(
             symbol=symbol,
             side="sell",
             trade_side="close",
             size=size,
             order_type="market",
-            margin_mode=margin_mode
+            margin_mode=margin_mode,
+            hold_side="long",
         )
 
     async def close_short(self, symbol: str, size: float,
                           margin_mode: str = "crossed") -> Dict:
-        """SHORT pozitsiyani yopish"""
+        """SHORT pozitsiyani yopish — holdSide='short' (BUG-26)"""
         return await self.place_order(
             symbol=symbol,
             side="buy",
             trade_side="close",
             size=size,
             order_type="market",
-            margin_mode=margin_mode
+            margin_mode=margin_mode,
+            hold_side="short",
         )
 
     async def close_all_positions(self, symbol: str,
