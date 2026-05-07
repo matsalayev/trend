@@ -162,8 +162,12 @@ class TrendRobot:
             try:
                 await self.client.set_position_mode(hedge_mode=True)
             except Exception as e:
-                if not any(k in str(e).lower() for k in ("already", "same", "40756", "400172")):
-                    logger.warning(f"Position mode xato: {e}")
+                # BUG-42: unknown error = fatal (close orders need hedge mode)
+                if any(k in str(e).lower() for k in ("already", "same", "40756", "400172")):
+                    logger.info("Position mode allaqachon HEDGE")
+                else:
+                    logger.error(f"FATAL: Hedge mode set failed: {e}")
+                    raise
 
             # Symbol info + leverage cap
             try:
