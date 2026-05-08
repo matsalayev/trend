@@ -226,7 +226,7 @@
       "atr_period": 14,
       "supertrend_period": 10,
       "supertrend_multiplier": 2.0,
-      "use_htf_filter": true,
+      "use_htf_filter": false,
       "htf_ema_fast": 21,
       "htf_ema_slow": 50,
       "initial_sl_percent": 3.0,
@@ -238,7 +238,7 @@
       "partial_tp2_size_pct": 0.33,
       "max_drawdown_percent": 20.0,
       "cooldown_bars_after_sl": 5,
-      "adx_threshold": 35.0,
+      "adx_threshold": 33.0,
       "chop_max_for_entry": 60.0,
       "sl_atr_multiplier": 1.0,
       "trailing_atr_multiplier": 2.5,
@@ -252,6 +252,11 @@
       "max_trades_per_hour": 4,
       "consecutive_losses_threshold": 3,
       "consecutive_losses_cooldown_bars": 20
+    },
+    "_tuned_2026_05_08": {
+      "change": "htf=False, adx=35\u219233, chop_max=60 effective via loader fix",
+      "backtest_180d_old": "11t / +3.2% / PF=1.59",
+      "backtest_180d_new": "52t / +24% / PF=1.81"
     }
   },
   "DOGEUSDT": {
@@ -277,7 +282,7 @@
       "atr_period": 14,
       "supertrend_period": 10,
       "supertrend_multiplier": 2.0,
-      "use_htf_filter": true,
+      "use_htf_filter": false,
       "htf_ema_fast": 21,
       "htf_ema_slow": 50,
       "initial_sl_percent": 3.0,
@@ -289,8 +294,8 @@
       "partial_tp2_size_pct": 0.33,
       "max_drawdown_percent": 20.0,
       "cooldown_bars_after_sl": 5,
-      "adx_threshold": 35.0,
-      "chop_max_for_entry": 42.0,
+      "adx_threshold": 33.0,
+      "chop_max_for_entry": 60.0,
       "sl_atr_multiplier": 1.0,
       "trailing_atr_multiplier": 3.5,
       "use_choppiness_filter": true,
@@ -303,6 +308,11 @@
       "max_trades_per_hour": 4,
       "consecutive_losses_threshold": 3,
       "consecutive_losses_cooldown_bars": 20
+    },
+    "_tuned_2026_05_08": {
+      "change": "htf=False, adx=35\u219233, chop_max=42\u219260",
+      "backtest_180d_old": "15t / -0.8% / PF=0.92",
+      "backtest_180d_new": "62t / +16.5% / PF=1.38"
     }
   },
   "LINKUSDT": {

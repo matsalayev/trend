@@ -415,36 +415,71 @@ def _load_presets_from_file() -> dict:
             result = {}
             for sym, r in data.items():
                 cfg = r.get("config", r)
-                result[sym] = {
-                    "leverage": int(cfg.get("leverage", 10)),
-                    "ema_fast": int(cfg.get("ema_fast", 9)),
-                    "ema_slow": int(cfg.get("ema_slow", 21)),
-                    "adx_threshold": float(cfg.get("adx_threshold", 25.0)),
-                    "adx_period": int(cfg.get("adx_period", 14)),
-                    "atr_period": int(cfg.get("atr_period", 14)),
-                    "supertrend_period": int(cfg.get("supertrend_period", 10)),
-                    "supertrend_multiplier": float(cfg.get("supertrend_multiplier", 3.0)),
-                    "trailing_atr_multiplier": float(cfg.get("trailing_atr_multiplier", 1.5)),
-                    "trailing_activation_percent": float(
-                        cfg.get("trailing_activation_percent", 1.0)
-                    ),
-                    "initial_sl_percent": float(cfg.get("initial_sl_percent", 3.0)),
-                    "use_htf_filter": bool(cfg.get("use_htf_filter", True)),
-                    "htf_ema_fast": int(cfg.get("htf_ema_fast", 21)),
-                    "htf_ema_slow": int(cfg.get("htf_ema_slow", 50)),
-                    "use_partial_tp": bool(cfg.get("use_partial_tp", True)),
-                    "partial_tp1_percent": float(cfg.get("partial_tp1_percent", 2.0)),
-                    "partial_tp1_size_pct": float(cfg.get("partial_tp1_size_pct", 0.33)),
-                    "partial_tp2_percent": float(cfg.get("partial_tp2_percent", 5.0)),
-                    "partial_tp2_size_pct": float(cfg.get("partial_tp2_size_pct", 0.33)),
-                    "max_drawdown_percent": float(cfg.get("max_drawdown_percent", 20.0)),
-                    "cooldown_bars_after_sl": int(cfg.get("cooldown_bars_after_sl", 5)),
-                    # Backtest metadatasi (UI da ko'rsatish uchun)
+                # BUG-45: previously this dict only extracted ~20 keys, silently
+                # dropping chop_max_for_entry / sl_atr_multiplier / use_atr_sl /
+                # use_choppiness_filter / use_opposite_signal_exit / etc. The
+                # downstream apply_preset_to_config() actually supports all of
+                # these but never saw them at runtime, so production used
+                # defaults regardless of what presets.json contained.
+                # Now: extract every TrendConfig field that presets.json may
+                # set; missing keys fall back to TrendConfig defaults via
+                # apply_preset_to_config()'s `if key in merged` guards.
+                preset: dict = {
+                    # Trading
+                    "leverage": int(cfg["leverage"]) if "leverage" in cfg else 10,
+                    # Timeframes
+                    **({"timeframe": str(cfg["timeframe"])} if "timeframe" in cfg else {}),
+                    **({"htf_timeframe": str(cfg["htf_timeframe"])} if "htf_timeframe" in cfg else {}),
+                    # EMA
+                    **({"ema_fast": int(cfg["ema_fast"])} if "ema_fast" in cfg else {}),
+                    **({"ema_slow": int(cfg["ema_slow"])} if "ema_slow" in cfg else {}),
+                    **({"max_signal_age_bars": int(cfg["max_signal_age_bars"])} if "max_signal_age_bars" in cfg else {}),
+                    # Volatility / trend strength
+                    **({"atr_period": int(cfg["atr_period"])} if "atr_period" in cfg else {}),
+                    **({"adx_period": int(cfg["adx_period"])} if "adx_period" in cfg else {}),
+                    **({"adx_threshold": float(cfg["adx_threshold"])} if "adx_threshold" in cfg else {}),
+                    # Choppiness
+                    **({"use_choppiness_filter": bool(cfg["use_choppiness_filter"])} if "use_choppiness_filter" in cfg else {}),
+                    **({"chop_period": int(cfg["chop_period"])} if "chop_period" in cfg else {}),
+                    **({"chop_max_for_entry": float(cfg["chop_max_for_entry"])} if "chop_max_for_entry" in cfg else {}),
+                    # Consecutive losses cooldown
+                    **({"consecutive_losses_threshold": int(cfg["consecutive_losses_threshold"])} if "consecutive_losses_threshold" in cfg else {}),
+                    **({"consecutive_losses_cooldown_bars": int(cfg["consecutive_losses_cooldown_bars"])} if "consecutive_losses_cooldown_bars" in cfg else {}),
+                    # Supertrend
+                    **({"supertrend_period": int(cfg["supertrend_period"])} if "supertrend_period" in cfg else {}),
+                    **({"supertrend_multiplier": float(cfg["supertrend_multiplier"])} if "supertrend_multiplier" in cfg else {}),
+                    # HTF
+                    **({"use_htf_filter": bool(cfg["use_htf_filter"])} if "use_htf_filter" in cfg else {}),
+                    **({"htf_ema_fast": int(cfg["htf_ema_fast"])} if "htf_ema_fast" in cfg else {}),
+                    **({"htf_ema_slow": int(cfg["htf_ema_slow"])} if "htf_ema_slow" in cfg else {}),
+                    # Stop loss / trailing
+                    **({"initial_sl_percent": float(cfg["initial_sl_percent"])} if "initial_sl_percent" in cfg else {}),
+                    **({"use_atr_sl": bool(cfg["use_atr_sl"])} if "use_atr_sl" in cfg else {}),
+                    **({"sl_atr_multiplier": float(cfg["sl_atr_multiplier"])} if "sl_atr_multiplier" in cfg else {}),
+                    **({"trailing_activation_percent": float(cfg["trailing_activation_percent"])} if "trailing_activation_percent" in cfg else {}),
+                    **({"trailing_atr_multiplier": float(cfg["trailing_atr_multiplier"])} if "trailing_atr_multiplier" in cfg else {}),
+                    # Partial TP
+                    **({"use_partial_tp": bool(cfg["use_partial_tp"])} if "use_partial_tp" in cfg else {}),
+                    **({"partial_tp1_percent": float(cfg["partial_tp1_percent"])} if "partial_tp1_percent" in cfg else {}),
+                    **({"partial_tp1_size_pct": float(cfg["partial_tp1_size_pct"])} if "partial_tp1_size_pct" in cfg else {}),
+                    **({"partial_tp2_percent": float(cfg["partial_tp2_percent"])} if "partial_tp2_percent" in cfg else {}),
+                    **({"partial_tp2_size_pct": float(cfg["partial_tp2_size_pct"])} if "partial_tp2_size_pct" in cfg else {}),
+                    # Opposite signal exit
+                    **({"use_opposite_signal_exit": bool(cfg["use_opposite_signal_exit"])} if "use_opposite_signal_exit" in cfg else {}),
+                    **({"opposite_signal_requires_full_confirm": bool(cfg["opposite_signal_requires_full_confirm"])} if "opposite_signal_requires_full_confirm" in cfg else {}),
+                    # Fee-aware exit
+                    **({"min_net_profit_fee_factor": float(cfg["min_net_profit_fee_factor"])} if "min_net_profit_fee_factor" in cfg else {}),
+                    # Risk / cooldown
+                    **({"max_drawdown_percent": float(cfg["max_drawdown_percent"])} if "max_drawdown_percent" in cfg else {}),
+                    **({"cooldown_bars_after_sl": int(cfg["cooldown_bars_after_sl"])} if "cooldown_bars_after_sl" in cfg else {}),
+                    **({"max_trades_per_hour": int(cfg["max_trades_per_hour"])} if "max_trades_per_hour" in cfg else {}),
+                    # Backtest metadata (for UI display)
                     "_backtest_return": r.get("return_percent", 0.0),
                     "_backtest_winrate": r.get("winrate", 0.0),
                     "_backtest_trades": r.get("total_trades", 0),
                     "_backtest_drawdown": r.get("max_drawdown_percent", 0.0),
                 }
+                result[sym] = preset
             logger.info(f"Loaded {len(result)} pair presets from {p}")
             return result
         except Exception as e:

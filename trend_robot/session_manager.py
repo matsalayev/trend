@@ -126,6 +126,18 @@ class UserSession:
     min_net_profit_fee_factor: Optional[float] = None
     max_trades_per_hour: Optional[int] = None
 
+    # BUG-46: Choppiness Index + consecutive-loss cooldown were silently
+    # ignored — declared in TrendConfig and presets.json, accepted by
+    # apply_preset_to_config, but never carried by UserSession. Live
+    # AVAXUSDT preset had chop_max_for_entry=60 in HEMA DB and runtime
+    # used the TrendConfig default (50) regardless. Adding here closes
+    # the override pipeline end-to-end.
+    use_choppiness_filter: Optional[bool] = None
+    chop_period: Optional[int] = None
+    chop_max_for_entry: Optional[float] = None
+    consecutive_losses_threshold: Optional[int] = None
+    consecutive_losses_cooldown_bars: Optional[int] = None
+
     # Webhook
     webhook_url: str = ""
     webhook_secret: str = ""
@@ -860,6 +872,12 @@ class SessionManager:
             opposite_signal_requires_full_confirm=_opt_bool("oppositeSignalRequiresFullConfirm"),
             min_net_profit_fee_factor=_opt_float("minNetProfitFeeFactor"),
             max_trades_per_hour=_opt_int("maxTradesPerHour"),
+            # BUG-46 chop / consecutive-loss cooldown fields
+            use_choppiness_filter=_opt_bool("useChoppinessFilter"),
+            chop_period=_opt_int("chopPeriod"),
+            chop_max_for_entry=_opt_float("chopMaxForEntry"),
+            consecutive_losses_threshold=_opt_int("consecutiveLossesThreshold"),
+            consecutive_losses_cooldown_bars=_opt_int("consecutiveLossesCooldownBars"),
             # Webhook
             webhook_url=webhook_url,
             webhook_secret=webhook_secret,
@@ -1444,6 +1462,12 @@ class SessionManager:
             "opposite_signal_requires_full_confirm": "opposite_signal_requires_full_confirm",
             "min_net_profit_fee_factor": "min_net_profit_fee_factor",
             "max_trades_per_hour": "max_trades_per_hour",
+            # BUG-46 chop / consecutive-loss cooldown fields
+            "use_choppiness_filter": "use_choppiness_filter",
+            "chop_period": "chop_period",
+            "chop_max_for_entry": "chop_max_for_entry",
+            "consecutive_losses_threshold": "consecutive_losses_threshold",
+            "consecutive_losses_cooldown_bars": "consecutive_losses_cooldown_bars",
         }
         for attr, key in field_map.items():
             val = getattr(session, attr, None)
