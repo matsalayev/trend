@@ -968,7 +968,9 @@ class WebhookClient:
         payload = json.dumps(event)
         timestamp = str(int(time.time() * 1000))
         signature = self._generate_signature(timestamp, payload)
-        webhook_id = f"{event['data']['userBotId']}-{timestamp}-{uuid.uuid4().hex[:8]}"
+        # BUGFIX: safe access — agar 'data' yoki 'userBotId' yo'q bo'lsa KeyError chiqarmasin
+        user_bot_id = event.get('data', {}).get('userBotId', 'unknown')
+        webhook_id = f"{user_bot_id}-{timestamp}-{uuid.uuid4().hex[:8]}"
 
         headers = {
             "Content-Type": "application/json",
