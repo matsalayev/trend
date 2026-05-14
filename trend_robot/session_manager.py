@@ -400,17 +400,24 @@ class TrendRobotWithWebhook(TrendRobot):
         if self._webhook and entry > 0 and size > 0 and self.state in (RobotState.RUNNING, RobotState.STOPPING):
             try:
                 pnl = (exit_price - entry) * size if side == "long" else (entry - exit_price) * size
+                # BUGFIX (2026-05-14): HEMA Prisma `TradeSide` enum accepts only
+                # 'BUY'/'SELL'. Position.side is stored as 'long'/'short' →
+                # webhook payload's side.upper() produced 'LONG'/'SHORT' which
+                # Prisma rejected. Result: trend bot's trade_closed webhooks
+                # were ALL rejected for 39+ hours, so HEMA never recorded any
+                # trend trades despite the bot trading on Bitget.
+                webhook_side = "BUY" if str(side).lower() in ("long", "buy") else "SELL"
                 await self._webhook.send_trade_closed(
                     user_bot_id=self._session.user_bot_id,
                     symbol=self.config.trading.SYMBOL,
-                    side=side,
+                    side=webhook_side,
                     entry_price=entry,
                     exit_price=exit_price,
                     quantity=size,
                     pnl=pnl,
                     reason=reason,
                 )
-                logger.info(f"trade_closed webhook: {side} pnl=${pnl:.4f} reason={reason}")
+                logger.info(f"trade_closed webhook: {webhook_side} pnl=${pnl:.4f} reason={reason}")
             except Exception as e:
                 logger.warning(f"trade_closed webhook xatosi: {e}")
 
@@ -559,17 +566,21 @@ class TrendRobotWithWebhook(TrendRobot):
                     canonical_reason = "SL_HIT"
                 else:
                     canonical_reason = "EXTERNAL_CLOSE"
+                # BUGFIX (2026-05-14): same Prisma TradeSide enum issue —
+                # see _close_position above. _detect_closed_position runs when
+                # a position vanishes between ticks (exchange-side TP/SL hit).
+                webhook_side = "BUY" if str(side).lower() in ("long", "buy") else "SELL"
                 await self._webhook.send_trade_closed(
                     user_bot_id=self._session.user_bot_id,
                     symbol=self.config.trading.SYMBOL,
-                    side=side,
+                    side=webhook_side,
                     entry_price=prev_pos.entry_price,
                     exit_price=self.current_price,
                     quantity=prev_pos.size,
                     pnl=pnl,
                     reason=canonical_reason,
                 )
-                logger.info(f"trade_closed webhook: {side} pnl=${pnl:.4f}")
+                logger.info(f"trade_closed webhook: {webhook_side} pnl=${pnl:.4f}")
 
                 # State persistence tozalash
                 if self._persistence:
